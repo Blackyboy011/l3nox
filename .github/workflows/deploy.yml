@@ -37,6 +37,8 @@ jobs:
       - run: python build.py
         env:
           SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
+          GOATCOUNTER: ${{ vars.GOATCOUNTER }}
+          CONTACT_EMAIL: ${{ vars.CONTACT_EMAIL }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           L3NOX_AI_URL: ${{ vars.L3NOX_AI_URL }}
           L3NOX_AI_SECRET: ${{ secrets.L3NOX_AI_SECRET }}
