@@ -59,6 +59,7 @@ VENDOR_FEEDS = {
     "AWS": ["https://aws.amazon.com/security/security-bulletins/rss/feed/"],
 }
 VENDOR_DAYS = 3
+VENDOR_QUIET = {"Microsoft MSRC": 10}  # éditeurs très bavards : pas de P2 automatique, au plus N avis P3
 
 # Base d'alertes GitHub (logiciels open source : Metabase, Kafka, GitLab, WordPress, npm, pip…)
 GHSA_URL = "https://api.github.com/advisories?type=reviewed&severity=critical&per_page=60&sort=published"
@@ -637,8 +638,13 @@ def collect_vendors() -> list[dict]:
                 level = CRITICAL
             else:
                 level = WATCH
+            if source in VENDOR_QUIET and level == CRITICAL:
+                level = WATCH  # trop d'avis « RCE » : seuls les exploités montent en priorité
             if level < EXPLOITED and e["date"] < cutoff:
                 continue
+            if level == WATCH and source in VENDOR_QUIET:
+                if sum(1 for i in items if i["source"] == source and i["level"] == WATCH) >= VENDOR_QUIET[source]:
+                    continue
             items.append(make_item(source, e["title"], e["link"], e["date"], e["summary"], level))
             n += 1
         STATUS.append((source, True, f"{n} avis"))
@@ -1013,6 +1019,11 @@ table.prio{width:100%;border-collapse:collapse;font-size:15.5px}
 .prio td{display:block;border:0;padding:2px 0;width:auto!important}
 }
 
+.md h3:first-child{margin-top:0}
+.md h3+p{font-size:18px;line-height:1.55;max-width:70ch}
+.md h4{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font:700 17px/1.3 var(--body);margin:18px 0 6px}
+.md td .tag,.md li .tag{margin-right:4px}
+.md p{max-width:75ch}
 /* Fiches actions */
 .concern{margin:4px 20px 0;color:var(--muted);font-size:15px}
 
@@ -1359,7 +1370,83 @@ def lv_of(n) -> int:
     return {"P1": EXPLOITED, "P2": CRITICAL, "P3": WATCH}.get(str(n).strip().upper()[:2], INFO)
 
 
+MD_TAG = re.compile(r"\b(P[123])\b")
+
+
+def md_inline(t: str) -> str:
+    """Mise en forme d'une ligne : texte échappé, puis gras, liens http(s) et étiquettes P1/P2/P3."""
+    t = e(t)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", t)
+    t = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)",
+               lambda m: f'<a href="{m.group(2)}" target="_blank" rel="noopener">{m.group(1)}</a>', t)
+    t = re.sub(r"`([^`]+)`", r'<span class="cve">\1</span>', t)
+    return MD_TAG.sub(lambda m: f'<span class="tag lv{lv_of(m.group(1))}">{m.group(1)}</span>', t)
+
+
+def md_to_html(md: str) -> str:
+    out, para, lst, table = [], [], [], []
+
+    def flush():
+        if para:
+            out.append(f"<p>{md_inline(' '.join(para))}</p>")
+            para.clear()
+        if lst:
+            out.append('<ul class="watch">' + "".join(f"<li>{md_inline(x)}</li>" for x in lst) + "</ul>")
+            lst.clear()
+        if table:
+            rows = [[c.strip() for c in r.strip().strip("|").split("|")] for r in table
+                    if not re.fullmatch(r"\|?[\s:\-|]+\|?", r.strip())]
+            if rows:
+                head, body = rows[0], rows[1:]
+                out.append('<table class="prio"><thead><tr>' + "".join(f"<th>{md_inline(c)}</th>" for c in head)
+                           + "</tr></thead><tbody>" + "".join(
+                               "<tr>" + "".join(f"<td>{md_inline(c)}</td>" for c in r) + "</tr>" for r in body)
+                           + "</tbody></table>")
+            table.clear()
+
+    for raw in md.splitlines():
+        line = raw.rstrip()
+        if not line.strip():
+            flush()
+            continue
+        if line.lstrip().startswith("|"):
+            if para or lst:
+                flush()
+            table.append(line)
+            continue
+        if table:
+            flush()
+        m = re.match(r"^(#{2,4})\s+(.*)", line)
+        if m:
+            flush()
+            tag = "h3" if len(m.group(1)) == 2 else "h4"
+            out.append(f"<{tag}>{md_inline(m.group(2).strip())}</{tag}>")
+            continue
+        m = re.match(r"^\s*(?:[-*•]|\d+[.)])\s+(.*)", line)
+        if m:
+            if para:
+                out.append(f"<p>{md_inline(' '.join(para))}</p>")
+                para.clear()
+            lst.append(m.group(1))
+            continue
+        if lst:
+            lst[-1] += " " + line.strip()
+        else:
+            para.append(line.strip())
+    flush()
+    return "".join(out)
+
+
 def briefing_html(b) -> str:
+    if b and b.get("md"):
+        gen = datetime.fromisoformat(b["generated"]).astimezone(PARIS)
+        body = md_to_html(b["md"])
+        if b.get("truncated"):
+            body += '<p class="bnote">Le briefing a été raccourci : consultez le fil ci-dessous pour le détail.</p>'
+        sub = (f"Rédigé par l'IA à {gen.strftime('%H:%M')} le {gen.strftime('%d/%m')} à partir des sources officielles "
+               "listées plus bas. Vérifiez toujours les détails dans l'avis officiel.")
+        return (f'<section id="briefing"><div class="sh"><h2>Briefing du jour</h2><p>{e(sub)}</p></div>'
+                f'<div class="bcard md">{body}</div></section>')
     if not b or not isinstance(b.get("data"), dict):
         return ""
     d = b["data"]
@@ -1598,19 +1685,35 @@ Règles impératives :
 - Ne transforme pas chaque avis en urgence : retiens ce qui compte vraiment pour l'exploitation.
 - Français clair, phrases courtes, ton professionnel, sans emoji.
 
-Réponds UNIQUEMENT par un objet JSON valide, sans texte autour, de la forme :
-{"synthese": "2 à 4 phrases : le risque dominant du jour et ce qui a changé",
- "prioritaires": [{"niveau": "P1", "sujet": "Produit — CVE", "impact": "…", "action": "…", "lien": "url de la donnée"}],
- "points": [{"niveau": "P2", "titre": "…", "contexte": "…",
-             "versions": [{"produit": "…", "corrige": "…"}], "mesures": "…",
-             "confirme": "…", "non_confirme": "…", "lien": "url"}],
- "services": "1 à 2 phrases sur les pannes et incidents des services suivis",
- "fins_de_maintenance": "1 phrase, ou chaîne vide",
- "a_surveiller": ["…"],
- "actions": [{"niveau": "P1", "action": "…"}],
- "conclusion": "1 à 2 phrases"}
-« prioritaires » : au plus 6 éléments (P1 d'abord). « points » : au plus 4 sujets détaillés (P2 utiles).
-« actions » : au plus 8 actions concrètes, triées par priorité."""
+Réponds en Markdown, en français, SANS bloc de code et SANS rien d'autre que le briefing,
+avec exactement ces titres et dans cet ordre (tu peux omettre une section vide) :
+
+## Synthèse
+2 à 4 phrases : le risque dominant du jour et ce qui a changé.
+
+## Sécurité prioritaire
+Un tableau Markdown | Priorité | Sujet | Impact et action | Source | avec au plus 6 lignes, P1 d'abord.
+« Priorité » contient P1, P2 ou P3. « Source » contient un lien Markdown [Avis](url) pris dans les données.
+
+## Points importants
+Au plus 3 sujets P2, chacun sous un titre ### P2 — Produit, avec des puces courtes :
+- **Versions corrigées :** … (ou « voir l'avis officiel »)
+- **Mesures :** …
+- **Confirmé :** … / **Non confirmé :** …
+
+## Services et fins de maintenance
+1 à 3 puces.
+
+## À surveiller
+Au plus 4 puces.
+
+## Actions SysOps du jour
+Au plus 8 puces, chacune commençant par P1, P2 ou P3 suivi d'un tiret.
+
+## Conclusion
+1 à 2 phrases.
+
+Le briefing complet doit rester COURT : 700 mots au maximum."""
 
 
 def ai_input(entries: list[dict], eol: list[dict], status_rows: list[dict]) -> str:
@@ -1646,19 +1749,23 @@ def ai_input(entries: list[dict], eol: list[dict], status_rows: list[dict]) -> s
 
 
 def ai_call(prompt: str) -> dict:
-    body = {"model": AI_MODEL, "max_tokens": 3500, "system": AI_SYSTEM,
+    max_tokens = 3800
+    body = {"model": AI_MODEL, "max_tokens": max_tokens, "system": AI_SYSTEM,
             "messages": [{"role": "user", "content": prompt}]}
+    out_tokens = None
     if AI_URL:  # fonction Netlify (AI Gateway)
-        req = urllib.request.Request(AI_URL, data=json.dumps({"system": AI_SYSTEM, "prompt": prompt,
-                                                               "model": AI_MODEL, "max_tokens": 3500}).encode(),
+        req = urllib.request.Request(AI_URL.strip(), data=json.dumps({"system": AI_SYSTEM, "prompt": prompt,
+                                                                       "model": AI_MODEL, "max_tokens": max_tokens}).encode(),
                                      headers={"content-type": "application/json", "x-l3nox-secret": AI_SECRET,
                                               "User-Agent": UA})
         with urllib.request.urlopen(req, timeout=90) as r:
             resp = json.loads(r.read())
+        if resp.get("error"):
+            raise RuntimeError(f"service IA : {resp['error']}")
         text = resp.get("text", "")
-        if resp.get("usage"):
-            u = resp["usage"]
-            print(f"[ok] Synthèse IA : {u.get('input_tokens', '?')} tokens lus, {u.get('output_tokens', '?')} écrits.")
+        u = resp.get("usage") or {}
+        out_tokens = u.get("output_tokens")
+        print(f"[ok] Synthèse IA : {u.get('input_tokens', '?')} tokens lus, {out_tokens or '?'} écrits.")
     else:       # clé API directe
         req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(),
                                      headers={"x-api-key": AI_KEY, "anthropic-version": "2023-06-01",
@@ -1666,11 +1773,22 @@ def ai_call(prompt: str) -> dict:
         with urllib.request.urlopen(req, timeout=180) as r:
             resp = json.loads(r.read())
         text = "".join(b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text")
-    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
-    data = json.loads(text[text.find("{"): text.rfind("}") + 1])
-    if not isinstance(data, dict) or "synthese" not in data:
-        raise ValueError("réponse inattendue")
-    return data
+        out_tokens = (resp.get("usage") or {}).get("output_tokens")
+    text = re.sub(r"^```[a-z]*\s*|\s*```$", "", (text or "").strip())
+    if not text:
+        raise ValueError(f"réponse vide de l'IA (champs reçus : {', '.join(resp.keys()) or 'aucun'})")
+    if text.startswith("{"):  # ancien format JSON, toujours accepté
+        try:
+            data = json.loads(text[: text.rfind("}") + 1])
+            if isinstance(data, dict) and "synthese" in data:
+                return {"data": data}
+        except ValueError:
+            pass
+    truncated = bool(out_tokens and out_tokens >= max_tokens - 5)
+    if truncated:  # on retire la dernière ligne, probablement coupée
+        text = text.rsplit("\n", 1)[0]
+    print("[ok] Synthèse IA : début de la réponse : " + text[:120].replace("\n", " ") + "…")
+    return {"md": text, "truncated": truncated}
 
 
 def get_briefing(entries: list[dict], eol: list[dict], status_rows: list[dict]):
@@ -1711,7 +1829,7 @@ def get_briefing(entries: list[dict], eol: list[dict], status_rows: list[dict]):
         return cached
     counts[today] = n_day + 1
     counts = {k: v for k, v in counts.items() if k >= (NOW - timedelta(days=62)).strftime("%Y-%m-%d")}
-    out = {"sig": sig, "p1": sorted(p1), "generated": NOW.isoformat(), "model": AI_MODEL, "data": data,
+    out = {"sig": sig, "p1": sorted(p1), "generated": NOW.isoformat(), "model": AI_MODEL, **data,
            "calls": counts}
     os.makedirs(os.path.dirname(BRIEF_FILE) or ".", exist_ok=True)
     with open(BRIEF_FILE, "w", encoding="utf-8") as f:
