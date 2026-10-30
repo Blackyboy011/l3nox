@@ -33,13 +33,47 @@ SITE_DOMAIN = os.environ.get("SITE_DOMAIN", "")  # ex. l3nox.fr (vide = pas de d
 PARIS = ZoneInfo("Europe/Paris")
 UA = "Mozilla/5.0 (compatible; L3NOX-bulletin/2.0)"
 
-KEV_URL = "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json"
-KEV_DAYS = 14  # vulnérabilités ajoutées au catalogue ces N derniers jours
+# Chaque source peut avoir plusieurs adresses : la première qui répond est utilisée.
+KEV_URLS = [
+    "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+    "https://raw.githubusercontent.com/cisagov/kev-data/develop/known_exploited_vulnerabilities.json",
+]
+KEV_DAYS = 30  # vulnérabilités ajoutées au catalogue ces N derniers jours (toutes P1)
 
-CERT_FEEDS = {  # nom: (url, nombre de jours à afficher)
-    "alerte": ("https://www.cert.ssi.gouv.fr/alerte/feed/", 30),
-    "avis": ("https://www.cert.ssi.gouv.fr/avis/feed/", 2),
+CERT_FEEDS = {  # nom: ([adresses], nombre de jours à afficher)
+    "alerte": (["https://cert.cyber.gouv.fr/alerte/feed/", "https://www.cert.ssi.gouv.fr/alerte/feed/"], 30),
+    "avis": (["https://cert.cyber.gouv.fr/avis/feed/", "https://www.cert.ssi.gouv.fr/avis/feed/"], 3),
 }
+
+# Avis publiés directement par les éditeurs (souvent avant le CERT-FR)
+VENDOR_FEEDS = {
+    "Palo Alto": ["https://security.paloaltonetworks.com/rss.xml"],
+    "Cisco PSIRT": ["https://sec.cloudapps.cisco.com/security/center/psirtrss20/CiscoSecurityAdvisory.xml"],
+    "Fortinet PSIRT": ["https://filestore.fortinet.com/fortiguard/rss/ir.xml"],
+    "Microsoft MSRC": ["https://api.msrc.microsoft.com/update-guide/rss"],
+    "Cisco Talos": ["https://blog.talosintelligence.com/rss/"],
+}
+VENDOR_DAYS = 3
+
+# Base d'alertes GitHub (logiciels open source : Metabase, Kafka, GitLab, WordPress, npm, pip…)
+GHSA_URL = "https://api.github.com/advisories?type=reviewed&severity=critical&per_page=60&sort=published"
+GHSA_DAYS = 3
+
+# Pages d'état des grands services (pannes en cours ou récentes)
+STATUS_FEEDS = {
+    "GitHub": ["https://www.githubstatus.com/history.atom"],
+    "GitLab.com": ["https://status.gitlab.com/pages/5b36dc6502d06804c08349f7/rss"],
+    "Cloudflare": ["https://www.cloudflarestatus.com/history.atom"],
+    "Google Cloud": ["https://status.cloud.google.com/en/feed.atom"],
+    "AWS": ["https://status.aws.amazon.com/rss/all.rss"],
+    "Azure": ["https://azure.status.microsoft/en-us/status/feed/"],
+}
+STATUS_PAGES = {
+    "GitHub": "https://www.githubstatus.com/", "GitLab.com": "https://status.gitlab.com/",
+    "Cloudflare": "https://www.cloudflarestatus.com/", "Google Cloud": "https://status.cloud.google.com/",
+    "AWS": "https://health.aws.amazon.com/health/status", "Azure": "https://azure.status.microsoft/fr-fr/status",
+}
+STATUS_HOURS = 24
 
 REDHAT_URL = ("https://access.redhat.com/hydra/rest/securitydata/cve.json"
               "?after={after}&severity=critical&per_page=200")
@@ -63,6 +97,12 @@ SOURCE_SITES = {
     "CERT-FR alerte": "https://www.cert.ssi.gouv.fr/alerte/",
     "CERT-FR avis": "https://www.cert.ssi.gouv.fr/avis/",
     "Red Hat": "https://access.redhat.com/security/security-updates/cve",
+    "GitHub Advisory": "https://github.com/advisories?query=severity%3Acritical",
+    "Palo Alto": "https://security.paloaltonetworks.com/",
+    "Cisco PSIRT": "https://sec.cloudapps.cisco.com/security/center/publicationListing.x",
+    "Fortinet PSIRT": "https://www.fortiguard.com/psirt",
+    "Microsoft MSRC": "https://msrc.microsoft.com/update-guide",
+    "Cisco Talos": "https://blog.talosintelligence.com/",
     "BleepingComputer": "https://www.bleepingcomputer.com/",
     "The Hacker News": "https://thehackernews.com/",
     "Zataz": "https://www.zataz.com/",
@@ -76,15 +116,24 @@ SOURCE_DESC = {
     "CERT-FR alerte": "Alertes de l'ANSSI (menaces en cours)",
     "CERT-FR avis": "Avis de sécurité de l'ANSSI",
     "Red Hat": "CVE de sévérité critique publiées par Red Hat",
+    "GitHub Advisory": "Failles critiques des logiciels open source (avec versions corrigées)",
+    "Palo Alto": "Avis de sécurité de l'éditeur (PAN-OS, GlobalProtect…)",
+    "Cisco PSIRT": "Avis de sécurité de l'éditeur (ASA, FTD, IOS, SD-WAN…)",
+    "Fortinet PSIRT": "Avis de sécurité de l'éditeur (FortiOS, FortiGate…)",
+    "Microsoft MSRC": "Guide des mises à jour de sécurité Microsoft",
+    "Cisco Talos": "Recherches et campagnes d'attaque (renseignement sur la menace)",
 }
 
 # Niveaux de priorité
 EXPLOITED, CRITICAL, WATCH, INFO = 3, 2, 1, 0
-LEVEL_LABEL = {EXPLOITED: "Exploitée", CRITICAL: "Critique", WATCH: "À surveiller", INFO: "Info"}
+LEVEL_LABEL = {EXPLOITED: "P1 · Exploitée", CRITICAL: "P2 · Critique", WATCH: "P3 · À surveiller", INFO: "Info"}
+NEW_HOURS = 24  # badge « Nouveau » pour ce qui a moins de N heures
+P1_DAYS = 30    # une faille exploitée (P1) reste affichée N jours, quelle que soit sa source
 
 EXPLOIT_RE = re.compile(
     r"activement exploit|exploitée? activement|est exploitée|sont exploitées|exploitation active"
-    r"|actively exploited|exploited in the wild|in-the-wild|zero-day|0-day|jour zéro",
+    r"|actively exploited|in the wild|in-the-wild|aware of (?:attempted |active |limited )?exploitation"
+    r"|exploitation (?:attempts|confirmée|limitée)|zero-day|0-day|jour zéro",
     re.I)
 CRITICAL_RE = re.compile(
     r"exécution de code arbitraire à distance|remote code execution|\bRCE\b|critique|critical", re.I)
@@ -219,6 +268,45 @@ PLAYBOOKS = [
         },
     },
     {
+        "id": "devops", "label": "DevOps / CI-CD (GitLab, Jenkins…)",
+        "match": r"gitlab|jenkins|gitea|forgejo|teamcity|bamboo|github enterprise|argo ?cd|\bnexus\b|artifactory",
+        "steps": [
+            "Mettre à jour les instances autohébergées vers la version de sécurité indiquée par l'éditeur.",
+            "En attendant : restreindre l'accès à l'instance (VPN / IP autorisées) et aux fonctions CI/CD.",
+            "Rechercher des traces d'exploitation (journaux applicatifs, runners, jobs inconnus).",
+            "En cas de doute : faire tourner les secrets CI/CD, jetons d'accès et clés de déploiement.",
+        ],
+        "cmds": {
+            "GitLab (Omnibus)": "sudo gitlab-rake gitlab:env:info | grep -i version\n# RHEL : sudo dnf upgrade gitlab-ce   |   Debian : sudo apt install --only-upgrade gitlab-ce",
+        },
+    },
+    {
+        "id": "data", "label": "Bases de données & data (PostgreSQL, Kafka, Elastic…)",
+        "match": r"postgres|mysql|mariadb|mongodb|redis|elasticsearch|elastic|kibana|kafka|metabase|grafana|clickhouse|cassandra",
+        "steps": [
+            "Vérifier si le composant et la version concernés sont déployés (y compris en conteneur).",
+            "Mettre à jour vers la version corrigée et relire les éventuels changements de configuration demandés par l'éditeur.",
+            "Limiter l'exposition réseau : écoute uniquement sur les réseaux internes, authentification obligatoire.",
+            "Contrôler les comptes, rôles et exports récents.",
+        ],
+        "cmds": {
+            "RHEL / Rocky / Alma": "rpm -qa | grep -Ei 'postgres|mysql|mariadb|mongo|redis|elastic|kafka'",
+            "Debian / Ubuntu": "dpkg -l | grep -Ei 'postgres|mysql|mariadb|mongo|redis|elastic|kafka'",
+            "Docker": "docker ps --format '{{.Names}}  {{.Image}}' | grep -Ei 'postgres|mysql|mariadb|mongo|redis|elastic|kafka|metabase|grafana'",
+        },
+    },
+    {
+        "id": "backup", "label": "Sauvegarde (Veeam, Data Domain…)",
+        "match": r"veeam|data domain|powerprotect|commvault|veritas|netbackup|acronis|rubrik|cohesity|nakivo",
+        "steps": [
+            "Inventorier les serveurs et appliances de sauvegarde et relever leurs versions.",
+            "Restreindre leurs interfaces d'administration aux réseaux de gestion / bastions.",
+            "Appliquer les correctifs en vérifiant que les sauvegardes restent disponibles.",
+            "Vérifier l'existence d'une copie isolée (hors ligne / immuable) et tester une restauration.",
+        ],
+        "cmds": {},
+    },
+    {
         "id": "containers", "label": "Conteneurs (Docker / Kubernetes)",
         "match": r"docker|kubernetes|containerd|\brunc\b|podman",
         "steps": [
@@ -307,10 +395,22 @@ NOW = datetime.now(timezone.utc)
 STATUS: list[tuple[str, bool, str]] = []  # (source, ok, détail) pour le pied de page
 
 
-def fetch(url: str, timeout: int = 25) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
+def fetch(url: str, timeout: int = 25, headers: dict | None = None) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*", **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
+
+
+def fetch_first(urls: list[str], parse=None):
+    """Essaie chaque adresse dans l'ordre ; renvoie le premier résultat lisible."""
+    err = None
+    for url in urls:
+        try:
+            data = fetch(url)
+            return parse(data) if parse else data
+        except Exception as e:
+            err = e
+    raise err or RuntimeError("aucune adresse")
 
 
 def lname(tag) -> str:
@@ -380,7 +480,7 @@ def make_item(source, title, link, date, summary="", level=INFO, **extra) -> dic
 
 # ═════════════════════════ Collecte ═════════════════════════
 def collect_kev() -> list[dict]:
-    data = json.loads(fetch(KEV_URL))
+    data = fetch_first(KEV_URLS, json.loads)
     cutoff = (NOW - timedelta(days=KEV_DAYS)).date()
     items = []
     for v in data.get("vulnerabilities", []):
@@ -404,17 +504,18 @@ def collect_kev() -> list[dict]:
 
 def collect_cert() -> list[dict]:
     items = []
-    for kind, (url, days) in CERT_FEEDS.items():
+    for kind, (urls, days) in CERT_FEEDS.items():
         name = "CERT-FR " + ("alertes" if kind == "alerte" else "avis")
         try:
-            entries = parse_feed(fetch(url))
+            entries = fetch_first(urls, parse_feed)
         except Exception as e:  # une source en panne ne bloque pas le bulletin
             STATUS.append((name, False, type(e).__name__))
             continue
         cutoff = NOW - timedelta(days=days)
+        p1_cutoff = NOW - timedelta(days=max(days, P1_DAYS))
         n = 0
         for e in entries:
-            if not e["date"] or e["date"] < cutoff:
+            if not e["date"] or e["date"] < p1_cutoff:
                 continue
             text = f"{e['title']} {e['summary']}"
             if kind == "alerte" or EXPLOIT_RE.search(text):
@@ -423,6 +524,8 @@ def collect_cert() -> list[dict]:
                 level = CRITICAL
             else:
                 level = WATCH
+            if level < EXPLOITED and e["date"] < cutoff:
+                continue  # seules les P1 restent au-delà de la fenêtre normale
             items.append(make_item(f"CERT-FR {kind}", e["title"], e["link"], e["date"], e["summary"], level))
             n += 1
         STATUS.append((name, True, f"{n} élément(s)"))
@@ -446,6 +549,92 @@ def collect_redhat() -> list[dict]:
             it["cves"].insert(0, cve)
         items.append(it)
     return items
+
+
+def collect_vendors() -> list[dict]:
+    """Avis publiés directement par les éditeurs (Palo Alto, Cisco, Fortinet, Microsoft, Talos)."""
+    cutoff = NOW - timedelta(days=VENDOR_DAYS)
+    p1_cutoff = NOW - timedelta(days=max(VENDOR_DAYS, P1_DAYS))
+    items = []
+    for source, urls in VENDOR_FEEDS.items():
+        try:
+            entries = fetch_first(urls, parse_feed)
+        except Exception as e:
+            STATUS.append((source, False, type(e).__name__))
+            continue
+        n = 0
+        for e in entries:
+            if not e["date"] or e["date"] < p1_cutoff or not e["title"]:
+                continue
+            text = f"{e['title']} {e['summary']}"
+            if EXPLOIT_RE.search(text):
+                level = EXPLOITED
+            elif CRITICAL_RE.search(text):
+                level = CRITICAL
+            else:
+                level = WATCH
+            if level < EXPLOITED and e["date"] < cutoff:
+                continue
+            items.append(make_item(source, e["title"], e["link"], e["date"], e["summary"], level))
+            n += 1
+        STATUS.append((source, True, f"{n} avis"))
+    return items
+
+
+def collect_ghsa() -> list[dict]:
+    """Failles critiques de la base GitHub Advisory, avec les versions corrigées."""
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    if os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = f"Bearer {os.environ['GITHUB_TOKEN']}"
+    data = json.loads(fetch(GHSA_URL, headers=headers))
+    cutoff = NOW - timedelta(days=GHSA_DAYS)
+    items = []
+    for a in data if isinstance(data, list) else []:
+        date = parse_date(a.get("published_at", ""))
+        if not date or date < cutoff:
+            continue
+        fixes, pkgs = [], []
+        for v in a.get("vulnerabilities") or []:
+            pkg = (v.get("package") or {}).get("name", "")
+            if pkg and pkg not in pkgs:
+                pkgs.append(pkg)
+            if v.get("first_patched_version"):
+                fixes.append(f"{pkg} {v['first_patched_version']}")
+        score = (a.get("cvss") or {}).get("score") or ((a.get("cvss_severities") or {}).get("cvss_v3") or {}).get("score")
+        parts = []
+        if score:
+            parts.append(f"CVSS {score}")
+        if pkgs:
+            parts.append("Composant : " + ", ".join(pkgs[:3]))
+        parts.append(("Corrigé en : " + ", ".join(dict.fromkeys(fixes[:4]))) if fixes else "Pas encore de version corrigée")
+        it = make_item("GitHub Advisory", clean(a.get("summary", ""), 200), a.get("html_url", ""), date,
+                       " · ".join(parts), CRITICAL)
+        if a.get("cve_id") and a["cve_id"] not in it["cves"]:
+            it["cves"].insert(0, a["cve_id"])
+        items.append(it)
+    return items
+
+
+RESOLVED_RE = re.compile(r"\bresolved\b|\bcompleted\b|résolu|operating normally|has been mitigated", re.I)
+
+
+def collect_status() -> list[dict]:
+    """Incidents des dernières 24 h sur les pages d'état des grands services."""
+    cutoff = NOW - timedelta(hours=STATUS_HOURS)
+    rows = []
+    for name, urls in STATUS_FEEDS.items():
+        try:
+            entries = fetch_first(urls, parse_feed)
+        except Exception as e:
+            STATUS.append((f"État {name}", False, type(e).__name__))
+            rows.append({"name": name, "ok": None, "incidents": []})
+            continue
+        recent = [e for e in entries if e["date"] and e["date"] >= cutoff and e["title"]]
+        incidents = [{"title": e["title"], "link": e["link"] or STATUS_PAGES.get(name, ""), "date": e["date"],
+                      "resolved": bool(RESOLVED_RE.search(e["summary"] + " " + e["title"]))} for e in recent[:5]]
+        STATUS.append((f"État {name}", True, f"{len(incidents)} incident(s) 24 h"))
+        rows.append({"name": name, "ok": True, "incidents": incidents})
+    return rows
 
 
 def collect_news() -> list[dict]:
@@ -503,7 +692,7 @@ def due_fr(s: str) -> str:
         return s
 
 
-def item_row(it: dict, show_pb: bool = False) -> str:
+def item_row(it: dict, show_pb: bool = False, show_sum: bool = False) -> str:
     chips = "".join(f'<span class="cve">{e(c)}</span>' for c in it["cves"][:3])
     extra = ""
     if it["ransomware"]:
@@ -515,10 +704,14 @@ def item_row(it: dict, show_pb: bool = False) -> str:
     site = SOURCE_SITES.get(it["source"], "")
     src = (f'<a class="src" href="{e(site)}" target="_blank" rel="noopener" title="Site de la source">{e(it["source"])}</a>'
            if site else f'<span class="src">{e(it["source"])}</span>')
+    new = ('<span class="new">Nouveau</span>'
+           if it["date"] and it["level"] > INFO and NOW - it["date"] <= timedelta(hours=NEW_HOURS) else "")
+    summary = it["summary"] + (f" — Action CISA : {it['action']}" if it["action"] else "")
+    sum_html = f'<p class="sum">{e(summary)}</p>' if show_sum and summary else ""
     return (f'<li class="row lvl-{it["level"]}"><span class="dot" title="{e(LEVEL_LABEL[it["level"]])}"></span>'
-            f'<time>{e(when(it["date"]))}</time>{src}'
+            f'<time>{e(when(it["date"]))}</time>{src}{new}'
             f'<a class="t" href="{e(it["link"])}" target="_blank" rel="noopener">{e(it["title"])}</a>'
-            f'{chips}{extra}</li>')
+            f'{chips}{extra}{sum_html}</li>')
 
 
 def cmds_html(cmds: dict) -> str:
@@ -534,7 +727,7 @@ def playbook_card(pid, items: list[dict]) -> str:
     pb = PB_BY_ID.get(pid)
     top = max(i["level"] for i in items)
     label = pb["label"] if pb else "Autres produits"
-    rows = "".join(item_row(i) for i in items)
+    rows = "".join(item_row(i, show_sum=True) for i in items)
     if pb:
         steps = pb["steps"]
     else:
@@ -556,8 +749,28 @@ def section(title, sub, body, sid) -> str:
     return f'<section id="{sid}"><h2>{e(title)} <small>{e(sub)}</small></h2>{body}</section>'
 
 
-def render(kev, cert, redhat, news) -> str:
-    urgent = [i for i in kev + cert + redhat if i["level"] >= CRITICAL]
+def status_html(rows: list[dict]) -> str:
+    out = []
+    for r in rows:
+        page = STATUS_PAGES.get(r["name"], "")
+        name = f'<a href="{e(page)}" target="_blank" rel="noopener">{e(r["name"])}</a>'
+        if r["ok"] is None:
+            out.append(f'<li><span class="sv unk">?</span>{name}<span class="sd">État non récupéré : consultez la page officielle</span></li>')
+        elif not r["incidents"]:
+            out.append(f'<li><span class="sv ok2">●</span>{name}<span class="sd">Aucun incident signalé ces {STATUS_HOURS} h</span></li>')
+        else:
+            open_ = [i for i in r["incidents"] if not i["resolved"]]
+            cls, label = ("ko2", "Incident en cours") if open_ else ("warn", "Incident(s) résolu(s)")
+            open_tag = ' <b class="open">en cours</b>'
+            inc = "".join(f'<li><time>{e(when(i["date"]))}</time><a href="{e(i["link"])}" target="_blank" rel="noopener">'
+                          f'{e(i["title"])}</a>{"" if i["resolved"] else open_tag}</li>'
+                          for i in r["incidents"])
+            out.append(f'<li><span class="sv {cls}">●</span>{name}<span class="sd">{label}</span><ul class="inc">{inc}</ul></li>')
+    return f'<ul class="services">{"".join(out)}</ul>'
+
+
+def render(kev, cert, redhat, vendors, ghsa, status_rows, news) -> str:
+    urgent = [i for i in kev + cert + redhat + vendors + ghsa if i["level"] >= CRITICAL]
     groups: dict = {}
     for it in sorted(urgent, key=lambda i: (-i["level"], -(i["date"].timestamp() if i["date"] else 0))):
         groups.setdefault(it["playbook"], []).append(it)
@@ -565,20 +778,39 @@ def render(kev, cert, redhat, news) -> str:
 
     n_exp = sum(1 for i in urgent if i["level"] == EXPLOITED)
     n_crit = sum(1 for i in urgent if i["level"] == CRITICAL)
-    n_watch = sum(1 for i in cert if i["level"] == WATCH)
+    watch = sorted((i for i in cert + vendors if i["level"] == WATCH),
+                   key=lambda i: i["date"] or NOW, reverse=True)
+    n_watch = len(watch)
+    n_new = sum(1 for i in urgent if i["date"] and NOW - i["date"] <= timedelta(hours=NEW_HOURS))
+    outages = [r["name"] for r in status_rows if any(not i["resolved"] for i in r["incidents"])]
     priorities = [PB_BY_ID[k]["label"] for k in order if k][:3]
 
     if urgent:
         brief = (f"<b>{n_exp}</b> vulnérabilité{'s' if n_exp > 1 else ''} activement exploitée{'s' if n_exp > 1 else ''} "
                  f"et <b>{n_crit}</b> critique{'s' if n_crit > 1 else ''} à traiter.")
+        brief += f" Dont <b>{n_new}</b> nouveauté{'s' if n_new > 1 else ''} depuis 24 h."
         if priorities:
             brief += " Priorités du jour : " + ", ".join(f"<b>{e(p)}</b>" for p in priorities) + "."
     else:
         brief = "Rien de critique à signaler aujourd'hui. ✅ Profitez-en pour avancer sur les mises à jour courantes."
+    brief += (" <br>Services : panne en cours chez " + ", ".join(f"<b>{e(o)}</b>" for o in outages) + "."
+              if outages else " <br>Services suivis : aucune panne en cours signalée.")
+
+    p1 = sorted((i for i in urgent if i["level"] == EXPLOITED), key=lambda i: i["date"] or NOW, reverse=True)
+    if p1:
+        p1_rows = "".join(
+            f'<li>{"<span class=new>Nouveau</span>" if i["date"] and NOW - i["date"] <= timedelta(hours=NEW_HOURS) else ""}'
+            f'<time>{e(when(i["date"]))}</time><a href="{e(i["link"])}" target="_blank" rel="noopener">{e(i["title"])}</a>'
+            f'<span class="p1src">{e(i["source"])}</span>'
+            + (f'<a class="pb" href="#pb-{e(i["playbook"])}">actions</a>' if i["playbook"] else '<a class="pb" href="#pb-autres">actions</a>')
+            + '</li>' for i in p1)
+        p1_html = (f'<div class="p1box" id="p1"><h2>🔴 P1 · Failles exploitées en cours '
+                   f'<small>{len(p1)} · conservées {P1_DAYS} jours</small></h2><ul>{p1_rows}</ul></div>')
+    else:
+        p1_html = '<div class="p1box ok" id="p1"><h2>🟢 Aucune faille exploitée (P1) en cours</h2></div>'
 
     cards = "".join(playbook_card(k, groups[k]) for k in order) or '<p class="empty">Aucune action urgente.</p>'
-    watch = [i for i in cert if i["level"] == WATCH]
-    watch_html = (f'<ul class="list">{"".join(item_row(i, True) for i in watch)}</ul>'
+    watch_html = (f'<ul class="list">{"".join(item_row(i, True, True) for i in watch)}</ul>'
                   if watch else '<p class="empty">Aucun avis supplémentaire.</p>')
     news_html = (f'<ul class="list">{"".join(item_row(i, True) for i in news)}</ul>'
                  if news else '<p class="empty">Pas d\'actualité récupérée.</p>')
@@ -652,6 +884,24 @@ pre{{margin:0;background:var(--codebg);color:var(--codefg);border-radius:8px;pad
 .empty{{color:var(--mut);background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:14px 16px}}
 footer{{margin-top:36px;color:var(--mut);font-size:12.5px}} footer p{{margin:6px 0}}
 .ok{{color:var(--mut)}} .ko{{color:var(--l3)}}
+.p1box{{background:var(--card);border:2px solid var(--l3);border-radius:10px;padding:12px 16px;margin-bottom:22px}}
+.p1box.ok{{border-color:#16a34a}} .p1box h2{{margin:0;font-size:17px}}
+.p1box ul{{list-style:none;margin:8px 0 0;padding:0}}
+.p1box li{{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:6px 0;border-top:1px solid var(--line)}}
+.p1box li>a:not(.pb){{flex:1 1 300px;text-decoration:none;font-weight:600}} .p1box li>a:not(.pb):hover{{color:var(--acc)}}
+.p1src{{font-size:11px;color:var(--mut)}}
+.sum{{flex-basis:100%;margin:2px 0 0 47px;color:var(--mut);font-size:13px;line-height:1.45}}
+.new{{font-size:11px;font-weight:700;border-radius:4px;padding:0 6px;background:var(--acc);color:var(--card)}}
+.services{{list-style:none;margin:0;padding:0;background:var(--card);border:1px solid var(--line);border-radius:10px}}
+.services>li{{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;padding:9px 14px;border-bottom:1px solid var(--line)}}
+.services>li:last-child{{border-bottom:0}}
+.services>li>a{{font-weight:600;min-width:120px}}
+.services .sd{{color:var(--mut);font-size:13px}}
+.sv{{font-size:12px}} .sv.ok2{{color:#16a34a}} .sv.warn{{color:var(--l1)}} .sv.ko2{{color:var(--l3)}} .sv.unk{{color:var(--mut);font-weight:700}}
+.inc{{flex-basis:100%;list-style:none;margin:4px 0 0 22px;padding:0;font-size:13px}}
+.inc li{{display:flex;gap:8px;padding:2px 0}} .inc a{{text-decoration:none}} .inc a:hover{{text-decoration:underline}}
+.open{{color:var(--l3);font-weight:600}}
+@media(max-width:640px){{.sum{{margin-left:0}}}}
 a.src{{text-decoration:none}} a.src:hover{{background:var(--acc);color:var(--card)}}
 .search{{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;background:var(--bg);padding:10px 0;margin:-10px 0 4px}}
 .search input{{flex:1;min-width:0;font:15px system-ui,sans-serif;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 14px}}
@@ -675,17 +925,20 @@ a.src{{text-decoration:none}} a.src:hover{{background:var(--acc);color:var(--car
 <div class="stat l1"><b>{n_watch}</b><span>avis à surveiller</span></div>
 <div class="stat"><b>{len(news)}</b><span>actus 24 h</span></div>
 </div>
+{p1_html}
 <div class="search" role="search">
 <input id="q" type="search" placeholder="Rechercher : php, fortinet, CVE-2026-…, CERT-FR, ransomware…" aria-label="Rechercher dans le bulletin" autocomplete="off">
 <span id="qcount" aria-live="polite"></span>
 </div>
 <p id="noresult" class="empty" hidden>Aucun résultat pour cette recherche.</p>
 {section("À faire aujourd'hui", "regroupé par technologie, du plus urgent au moins urgent", cards, "actions")}
-{section("Avis CERT-FR à surveiller", f"{CERT_FEEDS['avis'][1]} derniers jours", watch_html, "avis")}
+{section("Avis à surveiller", f"CERT-FR et éditeurs · {CERT_FEEDS['avis'][1]} derniers jours", watch_html, "avis")}
+{section("Disponibilité des services", f"pages d'état officielles · {STATUS_HOURS} h", status_html(status_rows), "services")}
 {section("Actu IT & cyber", f"dernières {NEWS_HOURS} h", news_html, "actu")}
 {section("Sources", "cliquez pour ouvrir le site · état de la dernière collecte", sources_html, "sources")}
 <footer>
-<p>Périmètre : CISA KEV ({KEV_DAYS} j), CERT-FR alertes ({CERT_FEEDS['alerte'][1]} j) et avis ({CERT_FEEDS['avis'][1]} j), Red Hat ({REDHAT_DAYS} j), presse ({NEWS_HOURS} h).</p>
+<p>Périmètre : failles exploitées P1 conservées {P1_DAYS} j (CISA KEV, CERT-FR, éditeurs), CERT-FR alertes ({CERT_FEEDS['alerte'][1]} j) et avis ({CERT_FEEDS['avis'][1]} j), avis éditeurs ({VENDOR_DAYS} j), GitHub Advisory critiques ({GHSA_DAYS} j), Red Hat ({REDHAT_DAYS} j), pages d'état ({STATUS_HOURS} h), presse ({NEWS_HOURS} h).</p>
+<p>Ce bulletin est assemblé automatiquement à partir des sources : il ne vérifie pas les informations et n'analyse pas leur portée. Le niveau de priorité est déduit des mots-clés (« exploitée », « critique »…). Référez-vous toujours à l'avis officiel.</p>
 <p>Les commandes sont des exemples génériques : lisez l'avis officiel et testez avant de les appliquer en production.</p>
 </footer>
 </main>
@@ -742,16 +995,98 @@ def render_rss(urgent: list[dict]) -> str:
             + "".join(entries) + "</channel></rss>")
 
 
+# ═════════════════════ Notifications push (ntfy) ═════════════════════
+# Envoie une notification sur le téléphone pour chaque NOUVELLE alerte P1 (exploitée).
+# Configuration : secret GitHub NTFY_TOPIC = nom de ton canal ntfy (long et difficile à deviner).
+NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh")
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "")
+STATE_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "notified.json")
+STATE_KEEP_DAYS = 60
+NOTIFY_MAX = 5  # au-delà, une seule notification récapitulative
+
+
+def item_keys(it: dict) -> list[str]:
+    return it["cves"] + ([it["link"]] if it["link"] else [])
+
+
+def ntfy(title: str, message: str, click: str = "", priority: int = 5, tags=None) -> None:
+    payload = {"topic": NTFY_TOPIC, "title": title[:250], "message": message[:3500],
+               "priority": priority, "tags": tags or ["rotating_light"]}
+    if click:
+        payload["click"] = click
+    req = urllib.request.Request(NTFY_SERVER, data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json", "User-Agent": UA})
+    urllib.request.urlopen(req, timeout=20).read()
+
+
+def notify_p1(items: list[dict]) -> None:
+    if not NTFY_TOPIC:
+        print("[--] Notifications : secret NTFY_TOPIC absent, rien envoyé.")
+        return
+    try:
+        with open(STATE_FILE, encoding="utf-8") as f:
+            seen = json.load(f)
+        first_run = False
+    except (OSError, ValueError):
+        seen, first_run = {}, True
+
+    p1 = sorted((i for i in items if i["level"] == EXPLOITED), key=lambda i: i["date"] or NOW, reverse=True)
+    fresh, batch_keys = [], set()
+    for it in p1:
+        keys = item_keys(it)
+        if not keys or any(k in seen or k in batch_keys for k in keys):
+            continue  # déjà notifiée (même CVE vue via une autre source, par exemple)
+        fresh.append(it)
+        batch_keys.update(keys)
+
+    try:
+        if first_run:
+            ntfy("L3NOX · notifications activées",
+                 f"{len(p1)} alerte(s) P1 déjà en cours, visibles sur le bulletin. "
+                 "Vous serez prévenu ici de chaque nouvelle faille exploitée.",
+                 f"https://{SITE_DOMAIN}/" if SITE_DOMAIN else "", 3, ["white_check_mark"])
+        elif len(fresh) > NOTIFY_MAX:
+            lines = "\n".join(f"• {i['title']}" for i in fresh[:10])
+            ntfy(f"🔴 {len(fresh)} nouvelles alertes P1 exploitées", lines,
+                 f"https://{SITE_DOMAIN}/#actions" if SITE_DOMAIN else "")
+        else:
+            for it in fresh:
+                body = it["summary"] or "Vulnérabilité activement exploitée."
+                if it["action"]:
+                    body += f"\nAction : {it['action']}"
+                if it["cves"]:
+                    body += "\n" + ", ".join(it["cves"][:3])
+                body += f"\nSource : {it['source']}"
+                ntfy(f"🔴 P1 · {it['title']}", body, it["link"])
+    except Exception as e:  # on ne marque rien comme envoyé si l'envoi échoue
+        print(f"[!!] Notifications : échec de l'envoi ({e})")
+        return
+
+    stamp = NOW.strftime("%Y-%m-%d")
+    for it in (p1 if first_run else fresh):
+        for k in item_keys(it):
+            seen[k] = stamp
+    limit = (NOW - timedelta(days=STATE_KEEP_DAYS)).strftime("%Y-%m-%d")
+    seen = {k: v for k, v in seen.items() if v >= limit}
+    os.makedirs(os.path.dirname(STATE_FILE) or ".", exist_ok=True)
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(seen, f, indent=0)
+    print(f"[ok] Notifications : {'activation' if first_run else str(len(fresh)) + ' nouvelle(s) alerte(s) P1'} envoyée(s).")
+
+
 def main(out_dir: str = "_site") -> None:
     kev = safe("CISA KEV", collect_kev)
     cert = collect_cert()
     redhat = safe("Red Hat", collect_redhat)
+    vendors = collect_vendors()
+    ghsa = safe("GitHub Advisory", collect_ghsa)
+    status_rows = collect_status()
     news = collect_news()
 
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render(kev, cert, redhat, news))
-    urgent = [i for i in kev + cert + redhat if i["level"] >= CRITICAL]
+        f.write(render(kev, cert, redhat, vendors, ghsa, status_rows, news))
+    urgent = [i for i in kev + cert + redhat + vendors + ghsa if i["level"] >= CRITICAL]
     with open(os.path.join(out_dir, "alertes.xml"), "w", encoding="utf-8") as f:
         f.write(render_rss(urgent))
     if SITE_DOMAIN:
@@ -760,6 +1095,7 @@ def main(out_dir: str = "_site") -> None:
 
     for name, ok, detail in STATUS:
         print(f"[{'ok' if ok else '!!'}] {name}: {detail}")
+    notify_p1(urgent)
     print(f"Bulletin généré : {len(urgent)} alerte(s) prioritaire(s), {len(news)} actu(s).")
 
 
