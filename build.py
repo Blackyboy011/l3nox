@@ -831,6 +831,57 @@ pre{font-size:13px}
 @media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 """.replace("%DARK%", DARK_TOKENS)
 
+CSS_EXTRA = """
+/* Barre de filtres */
+.tools{position:sticky;top:0;z-index:10;background:var(--paper);padding:14px 0 12px;border-bottom:1px solid var(--rule)}
+.filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px;padding:0}
+.f{--lvc:var(--ink);display:inline-flex;align-items:center;gap:8px;font:600 15px/1 var(--body);color:var(--ink);
+background:var(--sheet);border:1px solid var(--rule);border-radius:999px;padding:8px 13px 8px 11px;cursor:pointer;white-space:nowrap}
+.f.lv3{--lvc:var(--p1)}.f.lv2{--lvc:var(--p2)}.f.lv1{--lvc:var(--p3)}.f.lv0{--lvc:var(--muted)}
+.f.fdone{--lvc:var(--ok)}.f.fhid{--lvc:var(--muted)}
+.f i{width:9px;height:9px;border-radius:50%;background:var(--lvc);flex:none}
+.f b{font-weight:700;color:var(--muted)}
+.f:hover{border-color:var(--lvc)}
+.f[aria-pressed="true"]{background:var(--lvc);border-color:var(--lvc);color:var(--ontag)}
+.f[aria-pressed="true"] b{color:inherit}.f[aria-pressed="true"] i{background:var(--ontag)}
+.sep{width:1px;align-self:stretch;background:var(--rule);margin:2px 4px}
+.clear{font:600 14px/1 var(--body);color:var(--ink);background:var(--sheet);border:1px solid var(--rule);
+border-radius:12px;padding:14px 14px;cursor:pointer;white-space:nowrap}
+.clear:hover:not(:disabled){border-color:var(--ink)}.clear:disabled{opacity:.45;cursor:default}
+
+/* Fil par jour */
+.day{padding-top:30px;scroll-margin-top:150px}
+.dayh{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 12px;margin:0 0 12px}
+.dayh span{color:var(--muted);font-size:15px}
+.lvblock{background:var(--sheet);border:1px solid var(--rule);border-left:6px solid var(--lvc);border-radius:14px;margin-bottom:14px;overflow:hidden}
+.lvh{display:flex;align-items:center;gap:10px;padding:14px 20px 2px;margin:0;font:700 16px/1.3 var(--body)}
+.lvh .n{font-weight:400;color:var(--muted);font-size:14px}
+.tag.lv0{background:var(--muted)}
+.acts{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.act{font:600 14px/1 var(--body);border-radius:8px;padding:8px 12px;cursor:pointer;border:1px solid var(--rule);background:var(--sheet);color:var(--ink)}
+.act.ok{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 50%,var(--rule))}
+.act.ok:hover{background:var(--ok);border-color:var(--ok);color:var(--ontag)}
+.act.no:hover{border-color:var(--ink)}
+.done-at{font-size:14px;font-weight:700;color:var(--ok)}.hid-at{font-size:14px;font-weight:700;color:var(--muted)}
+.also a{color:var(--link)}
+.viewempty{margin-top:30px}
+
+/* Fiches actions */
+.concern{margin:4px 20px 0;color:var(--muted);font-size:15px}
+
+#toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);display:flex;align-items:center;gap:16px;
+background:var(--ink);color:var(--paper);padding:12px 18px;border-radius:12px;font-size:15px;z-index:30;
+box-shadow:0 10px 30px rgba(10,16,28,.3);max-width:calc(100% - 32px)}
+#toast button{font:700 15px var(--body);color:var(--paper);background:none;border:0;text-decoration:underline;cursor:pointer;padding:0}
+
+@media (max-width:680px){
+.filters{flex-wrap:nowrap;overflow-x:auto;margin-left:-20px;margin-right:-20px;padding:0 20px 2px;scrollbar-width:none}
+.filters::-webkit-scrollbar{display:none}
+.lvh{padding:12px 14px 2px}.concern{margin:4px 14px 0}
+.clear{padding:13px 12px}
+}
+"""
+
 JS = r"""
 (function(){
 var root=document.documentElement,btn=document.getElementById('theme');
@@ -840,27 +891,88 @@ btn.addEventListener('click',function(){root.dataset.theme=cur()==='dark'?'light
   try{localStorage.setItem('l3nox:theme',root.dataset.theme)}catch(_){}label()});
 label();
 
+/* État des alertes : validées / écartées (mémorisé dans ce navigateur) */
+var KEY='l3nox:etat',store={};
+try{store=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(_){store={}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(store))}catch(_){}}
+var LV={p1:'3',p2:'2',p3:'1',news:'0'};
+var EMPTY={all:'Tout est traité ou écarté. Rien d’autre à faire pour le moment.',
+  p1:'Aucune faille exploitée en attente.',p2:'Aucune faille critique en attente.',p3:'Aucun avis à surveiller en attente.',
+  news:'Aucune actualité en attente.',done:'Aucune alerte validée pour l’instant.',hidden:'Aucune alerte écartée.'};
+var view='all',terms=[];
 var norm=function(s){return s.normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase()};
-var rows=[].slice.call(document.querySelectorAll('#actions .row,#avis .row,#actu .row'));
-rows.forEach(function(r){var g=r.closest('.group');r.dataset.s=norm(r.innerText+' '+(g?g.querySelector('h3').innerText:''))});
-var q=document.getElementById('q'),qc=document.getElementById('qcount'),nr=document.getElementById('noresult');
-function filter(){
-  var terms=norm(q.value).split(/\s+/).filter(Boolean),n=0;
-  rows.forEach(function(r){var ok=terms.every(function(t){return r.dataset.s.indexOf(t)>=0});r.hidden=!ok;if(ok)n++});
-  document.querySelectorAll('#actions .group').forEach(function(g){g.hidden=!g.querySelector('.row:not([hidden])')});
-  ['actions','avis','actu'].forEach(function(id){var s=document.getElementById(id);
-    if(s)s.hidden=terms.length>0&&!s.querySelector('.row:not([hidden])')});
-  qc.textContent=terms.length?(n+' résultat'+(n>1?'s':'')):'';
-  nr.hidden=!(terms.length&&n===0);
-  try{history.replaceState(null,'',terms.length?'#q='+encodeURIComponent(q.value):location.pathname)}catch(_){}
+var rows=[].slice.call(document.querySelectorAll('#fil .row'));
+rows.forEach(function(r){r.dataset.s=norm(r.querySelector('.head').innerText+' '+r.querySelector('.meta').innerText+' '+((r.querySelector('.sum')||{}).innerText||''))});
+function st(r){var s=store[r.dataset.id];return s?s.s:''}
+function inView(r,v){var s=st(r);
+  if(v==='done'||v==='hidden')return s===v;
+  if(s)return false;
+  return v==='all'||r.dataset.lv===LV[v]}
+function fmt(t){var d=new Date(t);return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'})+' à '+d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}
+var clearBtn=document.getElementById('clear'),qc=document.getElementById('qcount'),empty=document.getElementById('viewempty');
+
+function paint(){
+  var shown=0;
+  rows.forEach(function(r){
+    var ok=inView(r,view)&&terms.every(function(t){return r.dataset.s.indexOf(t)>=0});
+    r.hidden=!ok;if(ok)shown++;
+    var s=st(r),a=r.querySelector('.acts');
+    a.querySelector('.ok').hidden=!!s;a.querySelector('.no').hidden=!!s;
+    a.querySelector('.undo').hidden=!s;
+    var lab=a.querySelector('.state-lab');
+    lab.className='state-lab '+(s==='done'?'done-at':s==='hidden'?'hid-at':'');
+    lab.textContent=s==='done'?'Validée le '+fmt(store[r.dataset.id].t):s==='hidden'?'Écartée le '+fmt(store[r.dataset.id].t):'';
+  });
+  document.querySelectorAll('#fil .lvblock').forEach(function(b){
+    var n=b.querySelectorAll('.row:not([hidden])').length;b.hidden=!n;
+    b.querySelector('.n').textContent=n+' élément'+(n>1?'s':'')});
+  document.querySelectorAll('#fil .day').forEach(function(d){d.hidden=!d.querySelector('.lvblock:not([hidden])')});
+  ['all','p1','p2','p3','news','done','hidden'].forEach(function(v){
+    var c=rows.filter(function(r){return inView(r,v)}).length;
+    var b=document.querySelector('.f[data-v="'+v+'"]');if(b){b.querySelector('b').textContent=c;b.setAttribute('aria-pressed',v===view)}});
+  qc.textContent=terms.length?(shown+' résultat'+(shown>1?'s':'')):'';
+  empty.hidden=shown>0;
+  empty.textContent=terms.length?'Aucun résultat pour cette recherche dans cette vue.':EMPTY[view];
+  var restore=view==='done'||view==='hidden';
+  clearBtn.textContent=restore?'Tout remettre dans la liste':'Vider la liste';
+  clearBtn.title=restore?'Remettre toutes ces alertes dans la liste active':'Écarter toutes les alertes affichées';
+  clearBtn.disabled=!shown;
 }
-q.addEventListener('input',filter);
-var h=decodeURIComponent((location.hash.match(/^#q=(.*)/)||[])[1]||'');
-if(h){q.value=h;filter()}
+
+var toast=document.getElementById('toast'),toastT,undoFn=null;
+function say(msg,undo){toast.querySelector('span').textContent=msg;undoFn=undo;toast.querySelector('button').hidden=!undo;
+  toast.hidden=false;clearTimeout(toastT);toastT=setTimeout(function(){toast.hidden=true;undoFn=null},6000)}
+toast.querySelector('button').addEventListener('click',function(){if(undoFn)undoFn();toast.hidden=true;undoFn=null});
+
+function setState(ids,s){var prev={};ids.forEach(function(id){prev[id]=store[id];
+  if(s)store[id]={s:s,t:Date.now()};else delete store[id]});save();paint();
+  return function(){ids.forEach(function(id){if(prev[id])store[id]=prev[id];else delete store[id]});save();paint()}}
+
+document.getElementById('fil').addEventListener('click',function(ev){
+  var b=ev.target.closest('.act');if(!b)return;var r=b.closest('.row'),id=r.dataset.id;
+  var t=r.querySelector('.t').innerText.slice(0,60);
+  if(b.classList.contains('ok'))say('Validée : '+t,setState([id],'done'));
+  else if(b.classList.contains('no'))say('Écartée : '+t,setState([id],'hidden'));
+  else say('Remise dans la liste : '+t,setState([id],null));
+});
+clearBtn.addEventListener('click',function(){
+  var ids=rows.filter(function(r){return !r.hidden}).map(function(r){return r.dataset.id});
+  if(!ids.length)return;
+  var restore=view==='done'||view==='hidden';
+  say((restore?ids.length+' alerte(s) remise(s) dans la liste':ids.length+' alerte(s) écartée(s)'),setState(ids,restore?null:'hidden'));
+});
+document.querySelectorAll('.f').forEach(function(b){b.addEventListener('click',function(){
+  view=b.dataset.v;try{history.replaceState(null,'',view==='all'?location.pathname:'#'+view)}catch(_){}paint();
+  var fil=document.getElementById('fil');if(fil.getBoundingClientRect().top<0)fil.scrollIntoView()})});
+var q=document.getElementById('q');
+q.addEventListener('input',function(){terms=norm(q.value).split(/\s+/).filter(Boolean);paint()});
 document.addEventListener('keydown',function(ev){
   if(ev.key==='/'&&document.activeElement!==q){ev.preventDefault();q.focus()}
-  if(ev.key==='Escape'&&document.activeElement===q){q.value='';filter()}});
+  if(ev.key==='Escape'&&document.activeElement===q){q.value='';terms=[];paint()}});
+var h=location.hash.slice(1);if(LV[h]||h==='done'||h==='hidden')view=h;
+paint();
 
+/* Cases « Que faire » */
 var day=document.body.dataset.day;
 function progress(g){var b=g.querySelectorAll('.steps input'),c=g.querySelectorAll('.steps input:checked').length,p=g.querySelector('.progress');
   if(!p)return;p.textContent=c===b.length?'tout est fait':c+' sur '+b.length+' faites';p.classList.toggle('done',c===b.length)}
@@ -907,62 +1019,6 @@ def due_fr(s: str) -> str:
         return s
 
 
-def item_row(it: dict, show_pb: bool = False, show_sum: bool = False) -> str:
-    lvl = it["level"]
-    site = SOURCE_SITES.get(it["source"], "")
-    src = (f'<a class="src" href="{e(site)}" target="_blank" rel="noopener">{e(it["source"])}</a>'
-           if site else f'<span class="src">{e(it["source"])}</span>')
-    iso = it["date"].isoformat() if it["date"] else ""
-    meta = [src, f'<time datetime="{iso}">{e(when(it["date"]))}</time>']
-    meta += [f'<span class="cve">{e(c)}</span>' for c in it["cves"][:3]]
-    if it["ransomware"]:
-        meta.append('<span class="flag">utilisée par des rançongiciels</span>')
-    if it["due"]:
-        meta.append(f'<span>échéance CISA le {e(due_fr(it["due"]))}</span>')
-    if show_pb and it["playbook"]:
-        meta.append(f'<a class="pb" href="#pb-{e(it["playbook"])}">actions : {e(PB_BY_ID[it["playbook"]]["label"])}</a>')
-    new = ('<span class="new">nouveau</span>'
-           if it["date"] and lvl > INFO and NOW - it["date"] <= timedelta(hours=NEW_HOURS) else "")
-    summary = it["summary"] + (f" Action demandée par la CISA : {it['action']}" if it["action"] else "")
-    sum_html = f'<p class="sum">{e(summary)}</p>' if show_sum and summary.strip() else ""
-    tag = f'<span class="lv" title="{e(LEVEL_LABEL[lvl])}">{LEVEL_TAG[lvl]}</span>' if lvl else ""
-    return (f'<li class="row lv{lvl}{"" if lvl else " plain"}">{tag}'
-            f'<div class="head"><a class="t" href="{e(it["link"])}" target="_blank" rel="noopener">{e(it["title"])}</a>{new}</div>'
-            f'<div class="meta">{"".join(meta)}</div>{sum_html}</li>')
-
-
-def cmds_html(cmds: dict) -> str:
-    if not cmds:
-        return ""
-    blocks = "".join(f'<p class="os">{e(name)}</p><div class="code"><pre><code>{e(code)}</code></pre>'
-                     f'<button class="copy" type="button">Copier</button></div>' for name, code in cmds.items())
-    return f'<details class="cmds"><summary>Commandes utiles</summary>{blocks}</details>'
-
-
-def group_card(pid, items: list[dict]) -> str:
-    pb = PB_BY_ID.get(pid)
-    top = max(i["level"] for i in items)
-    label = pb["label"] if pb else "Autres produits"
-    if pb:
-        steps = pb["steps"]
-    else:
-        actions = list(dict.fromkeys(i["action"] for i in items if i["action"]))
-        steps = actions[:3] + GENERIC_STEPS
-    key = pid or "autres"
-    checklist = "".join(f'<li><label><input type="checkbox" data-k="{e(key)}-{n}">{e(s)}</label></li>'
-                        for n, s in enumerate(steps))
-    n_exp = sum(1 for i in items if i["level"] == EXPLOITED)
-    count = plural(len(items), "alerte", "alertes")
-    if n_exp:
-        count += f", dont {n_exp} exploitée{'s' if n_exp > 1 else ''}"
-    rows = "".join(item_row(i, show_sum=True) for i in items)
-    return (f'<article class="group lv{top}" id="pb-{e(key)}">'
-            f'<header class="gh"><span class="tag">{LEVEL_TAG[top]}</span><h3>{e(label)}</h3>'
-            f'<span class="count">{e(count)}</span></header><ul class="rows">{rows}</ul>'
-            f'<div class="todo"><h4>Que faire <span class="progress" aria-live="polite"></span></h4>'
-            f'<ol class="steps">{checklist}</ol>{cmds_html(pb["cmds"]) if pb else ""}</div></article>')
-
-
 def section(title: str, sub: str, body: str, sid: str) -> str:
     return f'<section id="{sid}"><div class="sh"><h2>{e(title)}</h2><p>{e(sub)}</p></div>{body}</section>'
 
@@ -1002,22 +1058,146 @@ def sources_html() -> str:
             f'<ul>{"".join(rows)}</ul></details>')
 
 
-def render(kev, cert, redhat, vendors, ghsa, status_rows, news) -> str:
-    urgent = [i for i in kev + cert + redhat + vendors + ghsa if i["level"] >= CRITICAL]
-    groups: dict = {}
-    for it in sorted(urgent, key=lambda i: (-i["level"], -(i["date"].timestamp() if i["date"] else 0))):
-        groups.setdefault(it["playbook"], []).append(it)
-    order = sorted(groups, key=lambda k: (k is None, -max(i["level"] for i in groups[k]), -len(groups[k])))
+LEVEL_NAME = {EXPLOITED: "Failles exploitées", CRITICAL: "Failles critiques", WATCH: "À surveiller", INFO: "Actualités"}
+TIMELINE_DAYS = 7  # au-delà, les alertes vont dans « Plus ancien »
 
-    watch = sorted((i for i in cert + vendors if i["level"] == WATCH), key=lambda i: i["date"] or NOW, reverse=True)
+
+def entry_id(it: dict) -> str:
+    return it["cves"][0] if it["cves"] else (it["link"] or it["title"])
+
+
+def merge_entries(items: list[dict]) -> list[dict]:
+    """Regroupe les éléments qui parlent de la même CVE (CISA, CERT-FR, éditeur, presse…)."""
+    items = sorted(items, key=lambda i: (-i["level"], -(i["date"].timestamp() if i["date"] else 0)))
+    by_cve, out = {}, []
+    for it in items:
+        prim = next((by_cve[c] for c in it["cves"] if c in by_cve), None)
+        if prim is None:
+            it = dict(it, also=[])
+            out.append(it)
+            for c in it["cves"]:
+                by_cve[c] = it
+        else:
+            prim["also"].append(it)
+            for c in it["cves"]:
+                by_cve.setdefault(c, prim)
+            if not prim["summary"] and it["summary"]:
+                prim["summary"] = it["summary"]
+            if not prim["playbook"] and it["playbook"]:
+                prim["playbook"] = it["playbook"]
+    return out
+
+
+def item_row(it: dict) -> str:
+    lvl = it["level"]
+    site = SOURCE_SITES.get(it["source"], "")
+    src = (f'<a class="src" href="{e(site)}" target="_blank" rel="noopener">{e(it["source"])}</a>'
+           if site else f'<span class="src">{e(it["source"])}</span>')
+    iso = it["date"].isoformat() if it["date"] else ""
+    meta = [src, f'<time datetime="{iso}">{e(when(it["date"]))}</time>']
+    meta += [f'<span class="cve">{e(c)}</span>' for c in it["cves"][:3]]
+    also = list(dict.fromkeys((a["source"], a["link"]) for a in it.get("also", []) if a["source"] != it["source"]))
+    if also:
+        meta.append('<span class="also">aussi : ' + ", ".join(
+            f'<a href="{e(l)}" target="_blank" rel="noopener">{e(s)}</a>' for s, l in also[:4]) + "</span>")
+    if it["ransomware"]:
+        meta.append('<span class="flag">utilisée par des rançongiciels</span>')
+    if it["due"]:
+        meta.append(f'<span>échéance CISA le {e(due_fr(it["due"]))}</span>')
+    if it["playbook"] and lvl > INFO:
+        meta.append(f'<a class="pb" href="#pb-{e(it["playbook"])}">Que faire : {e(PB_BY_ID[it["playbook"]]["label"])}</a>')
+    new = ('<span class="new">nouveau</span>'
+           if it["date"] and lvl > INFO and NOW - it["date"] <= timedelta(hours=NEW_HOURS) else "")
+    summary = it["summary"] + (f" Action demandée par la CISA : {it['action']}" if it["action"] else "")
+    sum_html = f'<p class="sum">{e(summary)}</p>' if summary.strip() else ""
+    acts = ('<div class="acts"><button class="act ok" type="button" title="Nous étions concernés et c\'est traité">Valider</button>'
+            '<button class="act no" type="button" title="Retirer cette alerte de la liste">Pas concerné</button>'
+            '<span class="state-lab"></span>'
+            '<button class="act undo" type="button" hidden>Remettre dans la liste</button></div>')
+    return (f'<li class="row plain" data-id="{e(entry_id(it))}" data-lv="{lvl}">'
+            f'<div class="head"><a class="t" href="{e(it["link"])}" target="_blank" rel="noopener">{e(it["title"])}</a>{new}</div>'
+            f'<div class="meta">{"".join(meta)}</div>{sum_html}{acts}</li>')
+
+
+def cmds_html(cmds: dict) -> str:
+    if not cmds:
+        return ""
+    blocks = "".join(f'<p class="os">{e(name)}</p><div class="code"><pre><code>{e(code)}</code></pre>'
+                     f'<button class="copy" type="button">Copier</button></div>' for name, code in cmds.items())
+    return f'<details class="cmds"><summary>Commandes utiles</summary>{blocks}</details>'
+
+
+def fiche_card(pid, items: list[dict]) -> str:
+    pb = PB_BY_ID[pid]
+    top = max(i["level"] for i in items)
+    counts = [plural(sum(1 for i in items if i["level"] == lv), LEVEL_TAG[lv], LEVEL_TAG[lv])
+              for lv in (EXPLOITED, CRITICAL, WATCH) if any(i["level"] == lv for i in items)]
+    checklist = "".join(f'<li><label><input type="checkbox" data-k="{e(pid)}-{n}">{e(s)}</label></li>'
+                        for n, s in enumerate(pb["steps"]))
+    return (f'<article class="group lv{top}" id="pb-{e(pid)}">'
+            f'<header class="gh"><span class="tag">{LEVEL_TAG[top]}</span><h3>{e(pb["label"])}</h3></header>'
+            f'<p class="concern">Concerne {plural(len(items), "alerte", "alertes")} ({", ".join(counts)})</p>'
+            f'<div class="todo"><h4>Que faire <span class="progress" aria-live="polite"></span></h4>'
+            f'<ol class="steps">{checklist}</ol>{cmds_html(pb["cmds"])}</div></article>')
+
+
+def day_label(d) -> tuple[str, str]:
+    today = NOW.astimezone(PARIS).date()
+    if d == today:
+        return "Aujourd'hui", date_fr(d)
+    if d == today - timedelta(days=1):
+        return "Hier", date_fr(d)
+    return f"{JOURS[d.weekday()].capitalize()} {d.day} {MOIS[d.month - 1]}", ""
+
+
+def render(kev, cert, redhat, vendors, ghsa, status_rows, news) -> str:
+    entries = merge_entries(kev + cert + redhat + vendors + ghsa + news)
+    today = NOW.astimezone(PARIS).date()
+    loc = NOW.astimezone(PARIS)
+
+    # Fil : un bloc par jour, puis un bloc par niveau
+    days: dict = {}
+    for it in entries:
+        d = (it["date"] or NOW).astimezone(PARIS).date()
+        key = d if (today - d).days < TIMELINE_DAYS else "older"
+        days.setdefault(key, {}).setdefault(it["level"], []).append(it)
+    keys = sorted((k for k in days if k != "older"), reverse=True) + (["older"] if "older" in days else [])
+    fil = []
+    for k in keys:
+        if k == "older":
+            title, sub = "Plus ancien", f"avant le {(today - timedelta(days=TIMELINE_DAYS - 1)).strftime('%d/%m')}"
+        else:
+            title, sub = day_label(k)
+        blocks = []
+        for lv in (EXPLOITED, CRITICAL, WATCH, INFO):
+            items = sorted(days[k].get(lv, []), key=lambda i: i["date"] or NOW, reverse=True)
+            if not items:
+                continue
+            tag = LEVEL_TAG[lv] or "Actu"
+            blocks.append(f'<div class="lvblock lv{lv}"><h3 class="lvh"><span class="tag lv{lv}">{tag}</span>'
+                          f'{e(LEVEL_NAME[lv])} <span class="n"></span></h3>'
+                          f'<ul class="rows">{"".join(item_row(i) for i in items)}</ul></div>')
+        dkey = "older" if k == "older" else k.isoformat()
+        fil.append(f'<section class="day" id="j-{dkey}"><div class="dayh"><h2>{e(title)}</h2>'
+                   f'<span>{e(sub)}</span></div>{"".join(blocks)}</section>')
+
+    # Fiches « Que faire » par technologie
+    by_pb: dict = {}
+    for it in entries:
+        if it["playbook"] and it["level"] > INFO:
+            by_pb.setdefault(it["playbook"], []).append(it)
+    pb_order = sorted(by_pb, key=lambda k: (-max(i["level"] for i in by_pb[k]), -len(by_pb[k])))
+    fiches = "".join(fiche_card(k, by_pb[k]) for k in pb_order) or \
+        '<p class="empty">Aucune fiche : pas d\'alerte liée à une technologie suivie.</p>'
+
+    # Niveau du jour
+    urgent = [i for i in entries if i["level"] >= CRITICAL]
     n_exp = sum(1 for i in urgent if i["level"] == EXPLOITED)
     n_crit = sum(1 for i in urgent if i["level"] == CRITICAL)
     n_new = sum(1 for i in urgent if i["date"] and NOW - i["date"] <= timedelta(hours=NEW_HOURS))
+    n_watch = sum(1 for i in entries if i["level"] == WATCH)
     outages = [r["name"] for r in status_rows if any(not i["resolved"] for i in r["incidents"])]
     top = max((i["level"] for i in urgent), default=INFO)
-    loc = NOW.astimezone(PARIS)
-
-    # Niveau du jour
     if urgent:
         level, band = LEVEL_TAG[top], f"lv{top}"
         parts = []
@@ -1027,28 +1207,25 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news) -> str:
             parts.append(plural(n_crit, "faille critique", "failles critiques"))
         headline = " et ".join(parts) + " à traiter."
         lede = (f"{plural(n_new, 'nouvelle alerte', 'nouvelles alertes')} depuis hier. "
-                "Les technologies sont classées de la plus urgente à la moins urgente.")
+                "Validez ce que vous avez traité, écartez ce qui ne vous concerne pas.")
     else:
         level, band = "RAS", "ras"
         headline = "Rien de critique à traiter aujourd'hui."
         lede = "Bon moment pour avancer sur les mises à jour courantes."
     facts = [f'<li class="down">Panne en cours : {e(", ".join(outages))}</li>' if outages
              else '<li class="good">Aucune panne en cours sur les services suivis</li>',
-             f"<li>{plural(len(watch), 'avis à surveiller', 'avis à surveiller')}</li>",
-             f"<li>{plural(len(news), 'actu', 'actus')} en 24 h</li>",
+             f"<li>{plural(n_watch, 'avis à surveiller', 'avis à surveiller')}</li>",
+             '<li><a href="#fiches">Fiches « Que faire »</a></li>',
              '<li><a href="alertes.xml">Flux RSS des alertes</a></li>']
-    toc = "".join(f'<a class="lv{max(i["level"] for i in groups[k])}" href="#pb-{e(k or "autres")}">'
-                  f'<b>{LEVEL_TAG[max(i["level"] for i in groups[k])]}</b>'
-                  f'{e(PB_BY_ID[k]["label"] if k else "Autres produits")}<span>{len(groups[k])}</span></a>'
-                  for k in order)
-    toc_html = f'<nav class="toc" aria-label="Aller à une technologie">{toc}</nav>' if toc else ""
 
-    cards = "".join(group_card(k, groups[k]) for k in order) or \
-        '<p class="empty">Aucune faille exploitée ou critique pour le moment.</p>'
-    watch_html = (f'<ul class="list">{"".join(item_row(i, True, True) for i in watch)}</ul>' if watch
-                  else '<p class="empty">Aucun avis supplémentaire ces derniers jours.</p>')
-    news_html = (f'<ul class="list">{"".join(item_row(i, True) for i in news)}</ul>' if news
-                 else '<p class="empty">Aucune actualité récupérée. Les sources sont peut-être indisponibles, voir plus bas.</p>')
+    filters = ('<button class="f" data-v="all" type="button"><i></i>Tout <b></b></button>'
+               '<button class="f lv3" data-v="p1" type="button"><i></i>P1 <b></b></button>'
+               '<button class="f lv2" data-v="p2" type="button"><i></i>P2 <b></b></button>'
+               '<button class="f lv1" data-v="p3" type="button"><i></i>P3 <b></b></button>'
+               '<button class="f lv0" data-v="news" type="button"><i></i>Actus <b></b></button>'
+               '<span class="sep" aria-hidden="true"></span>'
+               '<button class="f fdone" data-v="done" type="button"><i></i>Validées <b></b></button>'
+               '<button class="f fhid" data-v="hidden" type="button"><i></i>Écartées <b></b></button>')
     search_icon = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">'
                    '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>')
 
@@ -1063,7 +1240,7 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news) -> str:
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="{FONTS}">
 <script>try{{var t=localStorage.getItem('l3nox:theme');if(t)document.documentElement.dataset.theme=t}}catch(_){{}}</script>
-<style>{CSS}</style></head>
+<style>{CSS}{CSS_EXTRA}</style></head>
 <body data-day="{loc.strftime('%Y-%m-%d')}">
 <div class="wrap"><header class="bar"><a class="logo" href="./">L<span>3</span>NOX</a>
 <p class="stamp">{e(date_fr(loc)).capitalize()}, mis à jour à {loc.strftime("%H:%M")}</p>
@@ -1071,21 +1248,23 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news) -> str:
 <div class="band {band}"><div class="wrap">
 <div class="posture"><p class="level">{level}<span class="level-cap">niveau du jour</span></p>
 <div><h1>{e(headline)}</h1><p class="lede">{e(lede)}</p><ul class="facts">{"".join(facts)}</ul></div></div>
-{toc_html}</div></div>
+</div></div>
 <main class="wrap">
-<div class="search" role="search"><div class="field">{search_icon}
-<input id="q" type="search" placeholder="Rechercher un produit, une CVE, une source…" aria-label="Rechercher dans le bulletin" autocomplete="off">
-<span id="qcount" aria-live="polite"></span></div></div>
-<p id="noresult" class="empty" hidden>Aucun résultat. Essayez un nom de produit (php, fortinet) ou un numéro de CVE.</p>
-{section("À faire aujourd'hui", "Failles exploitées et critiques, regroupées par technologie", cards, "actions")}
-{section("Avis à surveiller", f"CERT-FR et éditeurs, {CERT_FEEDS['avis'][1]} derniers jours", watch_html, "avis")}
+<div class="tools"><div class="filters" role="group" aria-label="Filtrer par niveau">{filters}</div>
+<div class="field">{search_icon}
+<input id="q" type="search" placeholder="Rechercher un produit, une CVE, une source…" aria-label="Rechercher" autocomplete="off">
+<span id="qcount" aria-live="polite"></span><button class="clear" id="clear" type="button">Vider la liste</button></div></div>
+<div id="fil">{"".join(fil)}</div>
+<p id="viewempty" class="empty viewempty" hidden></p>
+{section("Fiches « Que faire »", "Actions recommandées par technologie", fiches, "fiches")}
 {section("Disponibilité des services", f"Pages d'état officielles, dernières {STATUS_HOURS} h", status_html(status_rows), "services")}
-{section("Actu IT et cyber", f"Presse spécialisée, dernières {NEWS_HOURS} h", news_html, "actu")}
 {section("Sources", "Cliquez sur une source pour ouvrir son site", sources_html(), "sources")}
 <footer>
 <p>Ce bulletin est assemblé automatiquement toutes les 15 minutes. Il ne vérifie pas les informations : le niveau de priorité est déduit des sources (catalogue CISA, alertes CERT-FR) et de mots-clés. Référez-vous toujours à l'avis officiel.</p>
+<p>Les alertes validées ou écartées sont mémorisées dans ce navigateur uniquement.</p>
 <p>Les commandes proposées sont des exemples génériques. Testez-les avant de les appliquer en production.</p>
 </footer></main>
+<div id="toast" role="status" hidden><span></span><button type="button">Annuler</button></div>
 <script>{JS}</script>
 </body></html>"""
 
