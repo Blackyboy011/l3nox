@@ -126,7 +126,7 @@ SOURCE_DESC = {
 
 # Niveaux de priorité
 EXPLOITED, CRITICAL, WATCH, INFO = 3, 2, 1, 0
-LEVEL_LABEL = {EXPLOITED: "P1 · Exploitée", CRITICAL: "P2 · Critique", WATCH: "P3 · À surveiller", INFO: "Info"}
+LEVEL_LABEL = {EXPLOITED: "P1 exploitée", CRITICAL: "P2 critique", WATCH: "P3 à surveiller", INFO: "Info"}
 NEW_HOURS = 24  # badge « Nouveau » pour ce qui a moins de N heures
 P1_DAYS = 30    # une faille exploitée (P1) reste affichée N jours, quelle que soit sa source
 
@@ -672,6 +672,216 @@ JOURS = ["lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche"
 MOIS = ["janvier", "février", "mars", "avril", "mai", "juin", "juillet",
         "août", "septembre", "octobre", "novembre", "décembre"]
 e = html.escape
+LEVEL_TAG = {EXPLOITED: "P1", CRITICAL: "P2", WATCH: "P3", INFO: ""}
+
+FONTS = ("https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,600..800"
+         "&family=Atkinson+Hyperlegible+Next:ital,wght@0,400;0,600;0,700;1,400"
+         "&family=Atkinson+Hyperlegible+Mono:wght@400;600&display=swap")
+
+DARK_TOKENS = ("--paper:#0E1524;--sheet:#151E31;--ink:#E4E9F1;--muted:#97A3B8;--rule:#26324A;"
+               "--link:#5CC8D2;--p1:#FF6378;--p2:#FF9F4D;--p3:#E3BF4F;--ok:#4FCB8C;"
+               "--code:#0A101C;--codeink:#DCE3EE;--ontag:#0E1524;color-scheme:dark;")
+
+CSS = """
+:root{--paper:#EEF2F6;--sheet:#FFFFFF;--ink:#18202E;--muted:#5A6678;--rule:#D6DDE6;--link:#0B6E78;
+--p1:#C21F3A;--p2:#B85A0B;--p3:#876B00;--ok:#1E7F4E;--code:#18202E;--codeink:#E4E9F1;--ontag:#FFFFFF;
+--display:"Archivo","Arial Narrow",system-ui,sans-serif;
+--body:"Atkinson Hyperlegible Next","Atkinson Hyperlegible",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+--mono:"Atkinson Hyperlegible Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){%DARK%}}
+:root[data-theme="dark"]{%DARK%}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font:400 17px/1.6 var(--body)}
+.wrap{max-width:920px;margin:0 auto;padding:0 20px}
+a{color:var(--link);text-underline-offset:3px}
+:focus-visible{outline:3px solid var(--link);outline-offset:2px;border-radius:4px}
+[hidden]{display:none!important}
+.lv3{--lvc:var(--p1)}.lv2{--lvc:var(--p2)}.lv1{--lvc:var(--p3)}.lv0{--lvc:var(--muted)}.ras{--lvc:var(--ok)}
+
+/* En-tête */
+.bar{display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px;padding:18px 0 16px}
+.logo{font:800 27px/1 var(--display);font-stretch:125%;color:var(--ink);text-decoration:none;letter-spacing:.01em}
+.logo span{color:var(--link)}
+.stamp{margin:0 0 0 auto;color:var(--muted);font-size:15px}
+.theme{font:600 14px/1 var(--body);color:var(--ink);background:var(--sheet);border:1px solid var(--rule);
+border-radius:999px;padding:8px 14px;cursor:pointer}
+.theme:hover{border-color:var(--link)}
+
+/* Niveau du jour */
+.band{background:color-mix(in srgb,var(--lvc) 9%,var(--paper));border-top:6px solid var(--lvc);
+border-bottom:1px solid color-mix(in srgb,var(--lvc) 28%,var(--paper))}
+.posture{display:grid;grid-template-columns:auto 1fr;gap:6px 34px;align-items:center;padding:30px 0 24px}
+.level{font:800 116px/.82 var(--display);font-stretch:125%;color:var(--lvc);letter-spacing:-.02em;margin:0}
+.level-cap{display:block;font:600 14px/1.2 var(--body);letter-spacing:0;color:var(--muted);margin-top:12px}
+h1{font:750 30px/1.22 var(--display);font-stretch:108%;margin:0 0 8px;max-width:32ch;text-wrap:balance}
+.lede{margin:0;color:var(--muted);font-size:18px;max-width:60ch}
+.facts{list-style:none;padding:0;margin:16px 0 0;display:flex;flex-wrap:wrap;gap:6px 22px;font-size:15px}
+.facts li{display:flex;align-items:center;gap:8px}
+.facts li::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
+.facts .good::before{background:var(--ok)}.facts .down::before{background:var(--p1)}
+.toc{display:flex;flex-wrap:wrap;gap:8px;padding:0 0 26px;margin:0}
+.toc a{display:inline-flex;align-items:center;gap:9px;padding:5px 13px 5px 5px;border-radius:999px;
+background:var(--sheet);border:1px solid var(--rule);color:var(--ink);text-decoration:none;font-size:15px;line-height:1.3}
+.toc a:hover{border-color:var(--lvc)}
+.toc b{font:800 12px/1 var(--display);font-stretch:118%;color:var(--ontag);background:var(--lvc);border-radius:999px;padding:5px 8px}
+.toc span{color:var(--muted)}
+
+/* Recherche */
+.search{position:sticky;top:0;z-index:10;background:var(--paper);padding:14px 0 10px}
+.field{position:relative;display:flex;align-items:center;gap:12px}
+.field svg{position:absolute;left:15px;width:18px;height:18px;color:var(--muted);pointer-events:none}
+.field input{flex:1;min-width:0;font:17px var(--body);color:var(--ink);background:var(--sheet);
+border:1px solid var(--rule);border-radius:12px;padding:12px 16px 12px 44px}
+.field input::placeholder{color:var(--muted)}
+.field input:focus{outline:3px solid color-mix(in srgb,var(--link) 45%,transparent);outline-offset:0;border-color:var(--link)}
+#qcount{color:var(--muted);font-size:14px;white-space:nowrap}
+
+/* Sections */
+section{padding-top:30px}
+.sh{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 14px;margin-bottom:14px}
+h2{font:750 24px/1.2 var(--display);font-stretch:112%;margin:0}
+.sh p{margin:0;color:var(--muted);font-size:15px}
+.empty{background:var(--sheet);border:1px dashed var(--rule);border-radius:14px;padding:18px 20px;color:var(--muted);margin:0}
+
+/* Groupes d'actions */
+.group{background:var(--sheet);border:1px solid var(--rule);border-left:6px solid var(--lvc);border-radius:14px;
+margin-bottom:18px;overflow:hidden;scroll-margin-top:90px}
+.gh{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:16px 20px 4px}
+.gh h3{font:750 20px/1.25 var(--display);font-stretch:108%;margin:0}
+.tag{font:800 13px/1 var(--display);font-stretch:118%;color:var(--ontag);background:var(--lvc);border-radius:6px;padding:5px 7px}
+.count{color:var(--muted);font-size:15px;margin-left:auto}
+.rows,.list{list-style:none;margin:0;padding:0 20px}
+.list{background:var(--sheet);border:1px solid var(--rule);border-radius:14px;padding:2px 20px}
+
+/* Une alerte */
+.row{display:grid;grid-template-columns:30px 1fr;column-gap:10px;padding:13px 0;border-top:1px solid var(--rule)}
+.row:first-child{border-top:0}
+.row>*{grid-column:2;min-width:0}
+.row>.lv{grid-column:1;grid-row:1/span 3;justify-self:start;align-self:start;margin-top:4px;font:800 11.5px/1 var(--display);
+font-stretch:118%;color:var(--lvc);border:1.5px solid var(--lvc);border-radius:5px;padding:3px 4px}
+.row.plain{grid-template-columns:1fr}.row.plain>*{grid-column:1}
+.head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px}
+.t{font-weight:600;color:var(--ink);text-decoration:none;line-height:1.42;overflow-wrap:anywhere}
+.t:hover{color:var(--link);text-decoration:underline}
+.new{font-size:12.5px;font-weight:700;color:var(--link);background:color-mix(in srgb,var(--link) 13%,transparent);
+border-radius:999px;padding:1px 9px;white-space:nowrap}
+.meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 14px;margin-top:5px;font-size:14px;color:var(--muted)}
+.src{font-weight:600;color:var(--link);text-decoration:none}.src:hover{text-decoration:underline}
+.cve{font:13px var(--mono);color:var(--ink);background:color-mix(in srgb,var(--ink) 7%,transparent);border-radius:4px;padding:1px 6px}
+.flag{color:var(--p1);font-weight:700}
+.pb{color:var(--link)}
+.sum{margin:6px 0 0;color:var(--muted);font-size:15px;line-height:1.55;max-width:72ch}
+
+/* Que faire */
+.todo{background:color-mix(in srgb,var(--lvc) 5%,var(--sheet));border-top:1px solid var(--rule);padding:14px 20px 18px;margin-top:6px}
+.todo h4{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;font:700 16px/1.3 var(--body);margin:0 0 6px}
+.progress{font-weight:400;font-size:14px;color:var(--muted)}
+.progress.done{color:var(--ok);font-weight:700}
+.steps{margin:0;padding-left:24px;max-width:76ch}
+.steps li{margin:7px 0;padding-left:4px}
+.steps li::marker{color:var(--muted);font-weight:700}
+.steps label{cursor:pointer}
+.steps input{width:17px;height:17px;margin:0 8px 0 0;vertical-align:-3px;accent-color:var(--ok);cursor:pointer}
+.steps li:has(input:checked) label{color:var(--muted);text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--muted) 55%,transparent)}
+.cmds{margin-top:12px}
+.cmds summary{cursor:pointer;font-weight:700;color:var(--link);width:max-content}
+.os{margin:14px 0 6px;font-size:14px;font-weight:600;color:var(--muted)}
+.code{position:relative}
+pre{margin:0;background:var(--code);color:var(--codeink);border-radius:10px;padding:14px 88px 14px 16px;overflow-x:auto;font:14px/1.65 var(--mono)}
+.copy{position:absolute;top:8px;right:8px;font:600 13px/1 var(--body);border:0;border-radius:6px;padding:7px 10px;
+background:color-mix(in srgb,var(--codeink) 16%,var(--code));color:var(--codeink);cursor:pointer}
+
+/* Services */
+.services{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fill,minmax(255px,1fr));gap:12px}
+.svc{background:var(--sheet);border:1px solid var(--rule);border-radius:12px;padding:12px 15px}
+.svc.down{border-color:color-mix(in srgb,var(--p1) 50%,var(--rule));background:color-mix(in srgb,var(--p1) 5%,var(--sheet))}
+.svc .name{font-weight:700;color:var(--ink);text-decoration:none}.svc .name:hover{color:var(--link);text-decoration:underline}
+.state{display:flex;align-items:center;gap:8px;font-size:14.5px;color:var(--muted);margin-top:2px}
+.state::before{content:"";width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+.good .state::before{background:var(--ok)}.warn .state::before{background:var(--p3)}.down .state::before{background:var(--p1)}
+.down .state{color:var(--p1);font-weight:700}
+.inc{list-style:none;margin:8px 0 0;padding:0;font-size:14px;line-height:1.45}
+.inc li{margin:5px 0}.inc time{color:var(--muted);margin-right:6px}.inc a{color:var(--ink)}
+.open{color:var(--p1);font-weight:700;margin-left:6px}
+
+/* Sources */
+.srcs{background:var(--sheet);border:1px solid var(--rule);border-radius:14px;padding:14px 20px}
+.srcs summary{cursor:pointer;font-weight:700;color:var(--ink)}
+.srcs ul{list-style:none;margin:10px 0 0;padding:0}
+.srcs li{display:grid;grid-template-columns:190px 1fr auto;gap:2px 14px;padding:9px 0;border-top:1px solid var(--rule);font-size:15px}
+.srcs li a{font-weight:600}
+.srcs .sd{color:var(--muted)}
+.okk{color:var(--ok)}.ko{color:var(--p1);font-weight:600}.unk{color:var(--muted)}
+
+footer{padding:34px 0 56px;color:var(--muted);font-size:14.5px;max-width:76ch}
+footer p{margin:8px 0}
+
+@media (max-width:680px){
+body{font-size:16px}
+.stamp{margin:0;width:100%;order:3}
+.posture{grid-template-columns:1fr;gap:10px;padding:22px 0 18px}
+.level{font-size:76px}.level-cap{display:inline;margin:0 0 0 10px}
+h1{font-size:23px}.lede{font-size:16px}
+.gh{padding:14px 14px 4px}.rows{padding:0 14px}.list{padding:2px 14px}.todo{padding:12px 14px 16px}
+.count{margin-left:0;width:100%}
+.srcs{padding:12px 14px}.srcs li{grid-template-columns:1fr}
+pre{font-size:13px}
+}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+""".replace("%DARK%", DARK_TOKENS)
+
+JS = r"""
+(function(){
+var root=document.documentElement,btn=document.getElementById('theme');
+function cur(){return root.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light')}
+function label(){btn.textContent=cur()==='dark'?'Mode jour':'Mode nuit'}
+btn.addEventListener('click',function(){root.dataset.theme=cur()==='dark'?'light':'dark';
+  try{localStorage.setItem('l3nox:theme',root.dataset.theme)}catch(_){}label()});
+label();
+
+var norm=function(s){return s.normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase()};
+var rows=[].slice.call(document.querySelectorAll('#actions .row,#avis .row,#actu .row'));
+rows.forEach(function(r){var g=r.closest('.group');r.dataset.s=norm(r.innerText+' '+(g?g.querySelector('h3').innerText:''))});
+var q=document.getElementById('q'),qc=document.getElementById('qcount'),nr=document.getElementById('noresult');
+function filter(){
+  var terms=norm(q.value).split(/\s+/).filter(Boolean),n=0;
+  rows.forEach(function(r){var ok=terms.every(function(t){return r.dataset.s.indexOf(t)>=0});r.hidden=!ok;if(ok)n++});
+  document.querySelectorAll('#actions .group').forEach(function(g){g.hidden=!g.querySelector('.row:not([hidden])')});
+  ['actions','avis','actu'].forEach(function(id){var s=document.getElementById(id);
+    if(s)s.hidden=terms.length>0&&!s.querySelector('.row:not([hidden])')});
+  qc.textContent=terms.length?(n+' résultat'+(n>1?'s':'')):'';
+  nr.hidden=!(terms.length&&n===0);
+  try{history.replaceState(null,'',terms.length?'#q='+encodeURIComponent(q.value):location.pathname)}catch(_){}
+}
+q.addEventListener('input',filter);
+var h=decodeURIComponent((location.hash.match(/^#q=(.*)/)||[])[1]||'');
+if(h){q.value=h;filter()}
+document.addEventListener('keydown',function(ev){
+  if(ev.key==='/'&&document.activeElement!==q){ev.preventDefault();q.focus()}
+  if(ev.key==='Escape'&&document.activeElement===q){q.value='';filter()}});
+
+var day=document.body.dataset.day;
+function progress(g){var b=g.querySelectorAll('.steps input'),c=g.querySelectorAll('.steps input:checked').length,p=g.querySelector('.progress');
+  if(!p)return;p.textContent=c===b.length?'tout est fait':c+' sur '+b.length+' faites';p.classList.toggle('done',c===b.length)}
+document.querySelectorAll('.group').forEach(function(g){
+  g.querySelectorAll('.steps input').forEach(function(cb){
+    var k='l3nox:'+day+':'+cb.dataset.k;
+    try{cb.checked=localStorage.getItem(k)==='1'}catch(_){}
+    cb.addEventListener('change',function(){try{localStorage.setItem(k,cb.checked?'1':'0')}catch(_){}progress(g)});
+  });progress(g)});
+
+document.querySelectorAll('.copy').forEach(function(b){b.addEventListener('click',function(){
+  var t=b.previousElementSibling.innerText;
+  (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(function(){b.textContent='Copié'},
+   function(){b.textContent='Sélectionnez le texte'});
+  setTimeout(function(){b.textContent='Copier'},1600)})});
+})();
+"""
+
+
+def plural(n: int, one: str, many: str) -> str:
+    return f"{n}\u00a0{one if n <= 1 else many}"
 
 
 def date_fr(d: datetime) -> str:
@@ -679,10 +889,15 @@ def date_fr(d: datetime) -> str:
 
 
 def when(d) -> str:
+    """Heure lisible : « aujourd'hui 09:12 », « hier 18:40 » ou « 28/10 »."""
     if not d:
         return ""
-    loc = d.astimezone(PARIS)
-    return loc.strftime("%H:%M") if loc.date() == NOW.astimezone(PARIS).date() else loc.strftime("%d/%m")
+    loc, today = d.astimezone(PARIS), NOW.astimezone(PARIS).date()
+    if loc.date() == today:
+        return "aujourd'hui " + loc.strftime("%H:%M")
+    if loc.date() == today - timedelta(days=1):
+        return "hier " + loc.strftime("%H:%M")
+    return loc.strftime("%d/%m")
 
 
 def due_fr(s: str) -> str:
@@ -693,80 +908,98 @@ def due_fr(s: str) -> str:
 
 
 def item_row(it: dict, show_pb: bool = False, show_sum: bool = False) -> str:
-    chips = "".join(f'<span class="cve">{e(c)}</span>' for c in it["cves"][:3])
-    extra = ""
-    if it["ransomware"]:
-        extra += '<span class="flag">rançongiciel</span>'
-    if it["due"]:
-        extra += f'<span class="due">échéance CISA {e(due_fr(it["due"]))}</span>'
-    if show_pb and it["playbook"]:
-        extra += f'<a class="pb" href="#pb-{e(it["playbook"])}">{e(PB_BY_ID[it["playbook"]]["label"])}</a>'
+    lvl = it["level"]
     site = SOURCE_SITES.get(it["source"], "")
-    src = (f'<a class="src" href="{e(site)}" target="_blank" rel="noopener" title="Site de la source">{e(it["source"])}</a>'
+    src = (f'<a class="src" href="{e(site)}" target="_blank" rel="noopener">{e(it["source"])}</a>'
            if site else f'<span class="src">{e(it["source"])}</span>')
-    new = ('<span class="new">Nouveau</span>'
-           if it["date"] and it["level"] > INFO and NOW - it["date"] <= timedelta(hours=NEW_HOURS) else "")
-    summary = it["summary"] + (f" — Action CISA : {it['action']}" if it["action"] else "")
-    sum_html = f'<p class="sum">{e(summary)}</p>' if show_sum and summary else ""
-    return (f'<li class="row lvl-{it["level"]}"><span class="dot" title="{e(LEVEL_LABEL[it["level"]])}"></span>'
-            f'<time>{e(when(it["date"]))}</time>{src}{new}'
-            f'<a class="t" href="{e(it["link"])}" target="_blank" rel="noopener">{e(it["title"])}</a>'
-            f'{chips}{extra}{sum_html}</li>')
+    iso = it["date"].isoformat() if it["date"] else ""
+    meta = [src, f'<time datetime="{iso}">{e(when(it["date"]))}</time>']
+    meta += [f'<span class="cve">{e(c)}</span>' for c in it["cves"][:3]]
+    if it["ransomware"]:
+        meta.append('<span class="flag">utilisée par des rançongiciels</span>')
+    if it["due"]:
+        meta.append(f'<span>échéance CISA le {e(due_fr(it["due"]))}</span>')
+    if show_pb and it["playbook"]:
+        meta.append(f'<a class="pb" href="#pb-{e(it["playbook"])}">actions : {e(PB_BY_ID[it["playbook"]]["label"])}</a>')
+    new = ('<span class="new">nouveau</span>'
+           if it["date"] and lvl > INFO and NOW - it["date"] <= timedelta(hours=NEW_HOURS) else "")
+    summary = it["summary"] + (f" Action demandée par la CISA : {it['action']}" if it["action"] else "")
+    sum_html = f'<p class="sum">{e(summary)}</p>' if show_sum and summary.strip() else ""
+    tag = f'<span class="lv" title="{e(LEVEL_LABEL[lvl])}">{LEVEL_TAG[lvl]}</span>' if lvl else ""
+    return (f'<li class="row lv{lvl}{"" if lvl else " plain"}">{tag}'
+            f'<div class="head"><a class="t" href="{e(it["link"])}" target="_blank" rel="noopener">{e(it["title"])}</a>{new}</div>'
+            f'<div class="meta">{"".join(meta)}</div>{sum_html}</li>')
 
 
 def cmds_html(cmds: dict) -> str:
     if not cmds:
         return ""
-    blocks = "".join(f'<p class="os">{e(os_name)}</p><div class="code"><pre><code>{e(code)}</code></pre>'
-                     f'<button class="copy" type="button">Copier</button></div>'
-                     for os_name, code in cmds.items())
-    return f'<details><summary>Commandes utiles</summary>{blocks}</details>'
+    blocks = "".join(f'<p class="os">{e(name)}</p><div class="code"><pre><code>{e(code)}</code></pre>'
+                     f'<button class="copy" type="button">Copier</button></div>' for name, code in cmds.items())
+    return f'<details class="cmds"><summary>Commandes utiles</summary>{blocks}</details>'
 
 
-def playbook_card(pid, items: list[dict]) -> str:
+def group_card(pid, items: list[dict]) -> str:
     pb = PB_BY_ID.get(pid)
     top = max(i["level"] for i in items)
     label = pb["label"] if pb else "Autres produits"
-    rows = "".join(item_row(i, show_sum=True) for i in items)
     if pb:
         steps = pb["steps"]
     else:
         actions = list(dict.fromkeys(i["action"] for i in items if i["action"]))
-        steps = actions[:3] + GENERIC_STEPS if actions else GENERIC_STEPS
+        steps = actions[:3] + GENERIC_STEPS
     key = pid or "autres"
-    checklist = "".join(f'<li><label><input type="checkbox" data-k="{e(key)}-{n}"> {e(s)}</label></li>'
+    checklist = "".join(f'<li><label><input type="checkbox" data-k="{e(key)}-{n}">{e(s)}</label></li>'
                         for n, s in enumerate(steps))
     n_exp = sum(1 for i in items if i["level"] == EXPLOITED)
-    badge = f'<span class="badge lvl-{top}">{e(LEVEL_LABEL[top])}</span>'
-    count = f'{len(items)} alerte{"s" if len(items) > 1 else ""}' + (f" · {n_exp} exploitée{'s' if n_exp > 1 else ''}" if n_exp else "")
-    return (f'<article class="card lvl-{top}" id="pb-{e(key)}"><header><h3>{e(label)}</h3>{badge}'
-            f'<span class="count">{e(count)}</span></header><ul class="list">{rows}</ul>'
-            f'<h4>Actions recommandées</h4><ol class="steps">{checklist}</ol>'
-            f'{cmds_html(pb["cmds"]) if pb else ""}</article>')
+    count = plural(len(items), "alerte", "alertes")
+    if n_exp:
+        count += f", dont {n_exp} exploitée{'s' if n_exp > 1 else ''}"
+    rows = "".join(item_row(i, show_sum=True) for i in items)
+    return (f'<article class="group lv{top}" id="pb-{e(key)}">'
+            f'<header class="gh"><span class="tag">{LEVEL_TAG[top]}</span><h3>{e(label)}</h3>'
+            f'<span class="count">{e(count)}</span></header><ul class="rows">{rows}</ul>'
+            f'<div class="todo"><h4>Que faire <span class="progress" aria-live="polite"></span></h4>'
+            f'<ol class="steps">{checklist}</ol>{cmds_html(pb["cmds"]) if pb else ""}</div></article>')
 
 
-def section(title, sub, body, sid) -> str:
-    return f'<section id="{sid}"><h2>{e(title)} <small>{e(sub)}</small></h2>{body}</section>'
+def section(title: str, sub: str, body: str, sid: str) -> str:
+    return f'<section id="{sid}"><div class="sh"><h2>{e(title)}</h2><p>{e(sub)}</p></div>{body}</section>'
 
 
 def status_html(rows: list[dict]) -> str:
     out = []
     for r in rows:
         page = STATUS_PAGES.get(r["name"], "")
-        name = f'<a href="{e(page)}" target="_blank" rel="noopener">{e(r["name"])}</a>'
+        name = f'<a class="name" href="{e(page)}" target="_blank" rel="noopener">{e(r["name"])}</a>'
         if r["ok"] is None:
-            out.append(f'<li><span class="sv unk">?</span>{name}<span class="sd">État non récupéré : consultez la page officielle</span></li>')
-        elif not r["incidents"]:
-            out.append(f'<li><span class="sv ok2">●</span>{name}<span class="sd">Aucun incident signalé ces {STATUS_HOURS} h</span></li>')
-        else:
-            open_ = [i for i in r["incidents"] if not i["resolved"]]
-            cls, label = ("ko2", "Incident en cours") if open_ else ("warn", "Incident(s) résolu(s)")
-            open_tag = ' <b class="open">en cours</b>'
-            inc = "".join(f'<li><time>{e(when(i["date"]))}</time><a href="{e(i["link"])}" target="_blank" rel="noopener">'
-                          f'{e(i["title"])}</a>{"" if i["resolved"] else open_tag}</li>'
-                          for i in r["incidents"])
-            out.append(f'<li><span class="sv {cls}">●</span>{name}<span class="sd">{label}</span><ul class="inc">{inc}</ul></li>')
+            out.append(f'<li class="svc unk">{name}<div class="state">État non récupéré, voir la page officielle</div></li>')
+            continue
+        if not r["incidents"]:
+            out.append(f'<li class="svc good">{name}<div class="state">Aucun incident en {STATUS_HOURS} h</div></li>')
+            continue
+        is_open = any(not i["resolved"] for i in r["incidents"])
+        cls, label = ("down", "Incident en cours") if is_open else ("warn", "Incident résolu")
+        inc = "".join(f'<li><time>{e(when(i["date"]))}</time><a href="{e(i["link"])}" target="_blank" rel="noopener">'
+                      f'{e(i["title"])}</a>{"" if i["resolved"] else "<span class=open>en cours</span>"}</li>'
+                      for i in r["incidents"])
+        out.append(f'<li class="svc {cls}">{name}<div class="state">{label}</div><ul class="inc">{inc}</ul></li>')
     return f'<ul class="services">{"".join(out)}</ul>'
+
+
+def sources_html() -> str:
+    st = {n: (ok, detail) for n, ok, detail in STATUS}
+    alias = {"CERT-FR alerte": "CERT-FR alertes"}
+    rows, n_ok = [], 0
+    for name, url in SOURCE_SITES.items():
+        ok, detail = st.get(alias.get(name, name), (None, "non interrogée"))
+        n_ok += bool(ok)
+        cls, txt = ("okk", detail) if ok else ("ko", "indisponible") if ok is False else ("unk", detail)
+        rows.append(f'<li><a href="{e(url)}" target="_blank" rel="noopener">{e(name)}</a>'
+                    f'<span class="sd">{e(SOURCE_DESC.get(name, "Actualité IT et cybersécurité"))}</span>'
+                    f'<span class="{cls}">{e(txt)}</span></li>')
+    return (f'<details class="srcs"><summary>{n_ok} sources sur {len(SOURCE_SITES)} lues lors de la dernière mise à jour</summary>'
+            f'<ul>{"".join(rows)}</ul></details>')
 
 
 def render(kev, cert, redhat, vendors, ghsa, status_rows, news) -> str:
@@ -776,205 +1009,84 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news) -> str:
         groups.setdefault(it["playbook"], []).append(it)
     order = sorted(groups, key=lambda k: (k is None, -max(i["level"] for i in groups[k]), -len(groups[k])))
 
+    watch = sorted((i for i in cert + vendors if i["level"] == WATCH), key=lambda i: i["date"] or NOW, reverse=True)
     n_exp = sum(1 for i in urgent if i["level"] == EXPLOITED)
     n_crit = sum(1 for i in urgent if i["level"] == CRITICAL)
-    watch = sorted((i for i in cert + vendors if i["level"] == WATCH),
-                   key=lambda i: i["date"] or NOW, reverse=True)
-    n_watch = len(watch)
     n_new = sum(1 for i in urgent if i["date"] and NOW - i["date"] <= timedelta(hours=NEW_HOURS))
     outages = [r["name"] for r in status_rows if any(not i["resolved"] for i in r["incidents"])]
-    priorities = [PB_BY_ID[k]["label"] for k in order if k][:3]
-
-    if urgent:
-        brief = (f"<b>{n_exp}</b> vulnérabilité{'s' if n_exp > 1 else ''} activement exploitée{'s' if n_exp > 1 else ''} "
-                 f"et <b>{n_crit}</b> critique{'s' if n_crit > 1 else ''} à traiter.")
-        brief += f" Dont <b>{n_new}</b> nouveauté{'s' if n_new > 1 else ''} depuis 24 h."
-        if priorities:
-            brief += " Priorités du jour : " + ", ".join(f"<b>{e(p)}</b>" for p in priorities) + "."
-    else:
-        brief = "Rien de critique à signaler aujourd'hui. ✅ Profitez-en pour avancer sur les mises à jour courantes."
-    brief += (" <br>Services : panne en cours chez " + ", ".join(f"<b>{e(o)}</b>" for o in outages) + "."
-              if outages else " <br>Services suivis : aucune panne en cours signalée.")
-
-    p1 = sorted((i for i in urgent if i["level"] == EXPLOITED), key=lambda i: i["date"] or NOW, reverse=True)
-    if p1:
-        p1_rows = "".join(
-            f'<li>{"<span class=new>Nouveau</span>" if i["date"] and NOW - i["date"] <= timedelta(hours=NEW_HOURS) else ""}'
-            f'<time>{e(when(i["date"]))}</time><a href="{e(i["link"])}" target="_blank" rel="noopener">{e(i["title"])}</a>'
-            f'<span class="p1src">{e(i["source"])}</span>'
-            + (f'<a class="pb" href="#pb-{e(i["playbook"])}">actions</a>' if i["playbook"] else '<a class="pb" href="#pb-autres">actions</a>')
-            + '</li>' for i in p1)
-        p1_html = (f'<div class="p1box" id="p1"><h2>🔴 P1 · Failles exploitées en cours '
-                   f'<small>{len(p1)} · conservées {P1_DAYS} jours</small></h2><ul>{p1_rows}</ul></div>')
-    else:
-        p1_html = '<div class="p1box ok" id="p1"><h2>🟢 Aucune faille exploitée (P1) en cours</h2></div>'
-
-    cards = "".join(playbook_card(k, groups[k]) for k in order) or '<p class="empty">Aucune action urgente.</p>'
-    watch_html = (f'<ul class="list">{"".join(item_row(i, True, True) for i in watch)}</ul>'
-                  if watch else '<p class="empty">Aucun avis supplémentaire.</p>')
-    news_html = (f'<ul class="list">{"".join(item_row(i, True) for i in news)}</ul>'
-                 if news else '<p class="empty">Pas d\'actualité récupérée.</p>')
-    st = {n: (ok, detail) for n, ok, detail in STATUS}
-    st_alias = {"CERT-FR alerte": "CERT-FR alertes", "CERT-FR avis": "CERT-FR avis"}
-    src_rows = []
-    for name, url in SOURCE_SITES.items():
-        ok, detail = st.get(st_alias.get(name, name), (None, "non interrogée"))
-        state = ("ok", "✓ " + detail) if ok else ("ko", "✗ indisponible") if ok is False else ("", detail)
-        desc = SOURCE_DESC.get(name, "Actualité IT & cyber")
-        src_rows.append(f'<li><a href="{e(url)}" target="_blank" rel="noopener">{e(name)}</a>'
-                        f'<span class="sd">{e(desc)}</span><span class="{state[0]}">{e(state[1])}</span></li>')
-    sources_html = f'<ul class="sources">{"".join(src_rows)}</ul>'
+    top = max((i["level"] for i in urgent), default=INFO)
     loc = NOW.astimezone(PARIS)
+
+    # Niveau du jour
+    if urgent:
+        level, band = LEVEL_TAG[top], f"lv{top}"
+        parts = []
+        if n_exp:
+            parts.append(plural(n_exp, "faille exploitée", "failles exploitées"))
+        if n_crit:
+            parts.append(plural(n_crit, "faille critique", "failles critiques"))
+        headline = " et ".join(parts) + " à traiter."
+        lede = (f"{plural(n_new, 'nouvelle alerte', 'nouvelles alertes')} depuis hier. "
+                "Les technologies sont classées de la plus urgente à la moins urgente.")
+    else:
+        level, band = "RAS", "ras"
+        headline = "Rien de critique à traiter aujourd'hui."
+        lede = "Bon moment pour avancer sur les mises à jour courantes."
+    facts = [f'<li class="down">Panne en cours : {e(", ".join(outages))}</li>' if outages
+             else '<li class="good">Aucune panne en cours sur les services suivis</li>',
+             f"<li>{plural(len(watch), 'avis à surveiller', 'avis à surveiller')}</li>",
+             f"<li>{plural(len(news), 'actu', 'actus')} en 24 h</li>",
+             '<li><a href="alertes.xml">Flux RSS des alertes</a></li>']
+    toc = "".join(f'<a class="lv{max(i["level"] for i in groups[k])}" href="#pb-{e(k or "autres")}">'
+                  f'<b>{LEVEL_TAG[max(i["level"] for i in groups[k])]}</b>'
+                  f'{e(PB_BY_ID[k]["label"] if k else "Autres produits")}<span>{len(groups[k])}</span></a>'
+                  for k in order)
+    toc_html = f'<nav class="toc" aria-label="Aller à une technologie">{toc}</nav>' if toc else ""
+
+    cards = "".join(group_card(k, groups[k]) for k in order) or \
+        '<p class="empty">Aucune faille exploitée ou critique pour le moment.</p>'
+    watch_html = (f'<ul class="list">{"".join(item_row(i, True, True) for i in watch)}</ul>' if watch
+                  else '<p class="empty">Aucun avis supplémentaire ces derniers jours.</p>')
+    news_html = (f'<ul class="list">{"".join(item_row(i, True) for i in news)}</ul>' if news
+                 else '<p class="empty">Aucune actualité récupérée. Les sources sont peut-être indisponibles, voir plus bas.</p>')
+    search_icon = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">'
+                   '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>')
 
     return f"""<!doctype html>
 <html lang="fr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{SITE_NAME} · Bulletin SysOps</title>
-<meta name="description" content="Bulletin SysOps du jour : vulnérabilités exploitées, alertes CERT-FR et actions recommandées.">
-<link rel="alternate" type="application/rss+xml" title="{SITE_NAME} · Alertes" href="alertes.xml">
-<style>
-:root{{--bg:#f5f7fa;--card:#fff;--fg:#0f172a;--mut:#5b6b80;--line:#e2e8f0;--acc:#0369a1;
---l3:#dc2626;--l2:#ea580c;--l1:#b45309;--l0:#64748b;--codebg:#0f172a;--codefg:#e2e8f0;
---mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}}
-@media(prefers-color-scheme:dark){{:root{{--bg:#0a0e15;--card:#111823;--fg:#e5e9f0;--mut:#93a1b5;--line:#1f2a38;
---acc:#38bdf8;--l3:#f87171;--l2:#fb923c;--l1:#facc15;--l0:#94a3b8;--codebg:#05080d;--codefg:#d6deeb}}}}
-*{{box-sizing:border-box}}
-body{{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}}
-main{{max-width:980px;margin:auto;padding:28px 16px 48px}}
-a{{color:inherit}}
-.top{{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 14px;margin-bottom:6px}}
-.brand{{font:800 30px/1 var(--mono);letter-spacing:.04em;margin:0}}
-.brand span{{color:var(--acc)}}
-.tag{{color:var(--mut);font-size:14px}}
-.date{{color:var(--mut);margin:0 0 18px;font-size:14px}}
-.brief{{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--acc);border-radius:10px;padding:14px 16px;margin-bottom:16px}}
-.stats{{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:28px}}
-.stat{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px}}
-.stat b{{display:block;font:700 26px/1.1 var(--mono)}}
-.stat span{{color:var(--mut);font-size:13px}}
-.stat.l3 b{{color:var(--l3)}}.stat.l2 b{{color:var(--l2)}}.stat.l1 b{{color:var(--l1)}}
-section{{margin-top:30px}}
-h2{{font-size:19px;margin:0 0 12px}} h2 small{{font-weight:400;color:var(--mut);font-size:13px;margin-left:6px}}
-.card{{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--l0);border-radius:10px;padding:14px 16px;margin-bottom:14px}}
-.card.lvl-3{{border-left-color:var(--l3)}}.card.lvl-2{{border-left-color:var(--l2)}}
-.card header{{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:6px}}
-.card h3{{margin:0;font-size:17px}}
-.badge{{font-size:12px;font-weight:600;border-radius:999px;padding:1px 9px;color:#fff;background:var(--l0)}}
-.badge.lvl-3{{background:var(--l3)}}.badge.lvl-2{{background:var(--l2)}}
-.count{{color:var(--mut);font-size:13px;margin-left:auto}}
-h4{{margin:12px 0 4px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}}
-.list{{list-style:none;margin:0;padding:0}}
-.row{{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:8px 0;border-bottom:1px solid var(--line)}}
-.row:last-child{{border-bottom:0}}
-.dot{{width:9px;height:9px;border-radius:50%;background:var(--l0);flex:none}}
-.lvl-3>.dot{{background:var(--l3)}}.lvl-2>.dot{{background:var(--l2)}}.lvl-1>.dot{{background:var(--l1)}}
-time{{color:var(--mut);font:12px var(--mono);min-width:38px}}
-.src{{font-size:11px;font-weight:600;color:var(--acc);border:1px solid currentColor;border-radius:4px;padding:0 5px}}
-.t{{flex:1 1 320px;text-decoration:none;min-width:0;overflow-wrap:anywhere}} .t:hover{{color:var(--acc);text-decoration:underline}}
-.cve,.due,.flag,.pb{{font:11px var(--mono);border-radius:4px;padding:1px 5px;background:var(--line);color:var(--fg);text-decoration:none}}
-.flag{{background:var(--l3);color:#fff}} .due{{color:var(--mut)}} .pb:hover{{color:var(--acc)}}
-.steps{{margin:0;padding-left:20px}} .steps li{{margin:4px 0}}
-.steps input{{accent-color:var(--acc);margin-right:4px}}
-.steps label:has(input:checked){{color:var(--mut);text-decoration:line-through}}
-details{{margin-top:10px}} summary{{cursor:pointer;font-weight:600;color:var(--acc)}}
-.os{{margin:10px 0 4px;font-size:13px;color:var(--mut)}}
-.code{{position:relative}}
-pre{{margin:0;background:var(--codebg);color:var(--codefg);border-radius:8px;padding:12px 14px;overflow-x:auto;font:13px/1.5 var(--mono)}}
-.copy{{position:absolute;top:6px;right:6px;font:12px system-ui;border:0;border-radius:6px;padding:3px 8px;background:#334155;color:#e2e8f0;cursor:pointer}}
-.empty{{color:var(--mut);background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:14px 16px}}
-footer{{margin-top:36px;color:var(--mut);font-size:12.5px}} footer p{{margin:6px 0}}
-.ok{{color:var(--mut)}} .ko{{color:var(--l3)}}
-.p1box{{background:var(--card);border:2px solid var(--l3);border-radius:10px;padding:12px 16px;margin-bottom:22px}}
-.p1box.ok{{border-color:#16a34a}} .p1box h2{{margin:0;font-size:17px}}
-.p1box ul{{list-style:none;margin:8px 0 0;padding:0}}
-.p1box li{{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding:6px 0;border-top:1px solid var(--line)}}
-.p1box li>a:not(.pb){{flex:1 1 300px;text-decoration:none;font-weight:600}} .p1box li>a:not(.pb):hover{{color:var(--acc)}}
-.p1src{{font-size:11px;color:var(--mut)}}
-.sum{{flex-basis:100%;margin:2px 0 0 47px;color:var(--mut);font-size:13px;line-height:1.45}}
-.new{{font-size:11px;font-weight:700;border-radius:4px;padding:0 6px;background:var(--acc);color:var(--card)}}
-.services{{list-style:none;margin:0;padding:0;background:var(--card);border:1px solid var(--line);border-radius:10px}}
-.services>li{{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;padding:9px 14px;border-bottom:1px solid var(--line)}}
-.services>li:last-child{{border-bottom:0}}
-.services>li>a{{font-weight:600;min-width:120px}}
-.services .sd{{color:var(--mut);font-size:13px}}
-.sv{{font-size:12px}} .sv.ok2{{color:#16a34a}} .sv.warn{{color:var(--l1)}} .sv.ko2{{color:var(--l3)}} .sv.unk{{color:var(--mut);font-weight:700}}
-.inc{{flex-basis:100%;list-style:none;margin:4px 0 0 22px;padding:0;font-size:13px}}
-.inc li{{display:flex;gap:8px;padding:2px 0}} .inc a{{text-decoration:none}} .inc a:hover{{text-decoration:underline}}
-.open{{color:var(--l3);font-weight:600}}
-@media(max-width:640px){{.sum{{margin-left:0}}}}
-a.src{{text-decoration:none}} a.src:hover{{background:var(--acc);color:var(--card)}}
-.search{{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:10px;background:var(--bg);padding:10px 0;margin:-10px 0 4px}}
-.search input{{flex:1;min-width:0;font:15px system-ui,sans-serif;color:var(--fg);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 14px}}
-.search input:focus{{outline:2px solid var(--acc);outline-offset:1px}}
-#qcount{{color:var(--mut);font-size:13px;white-space:nowrap}}
-.sources{{list-style:none;margin:0;padding:0;background:var(--card);border:1px solid var(--line);border-radius:10px}}
-.sources li{{display:flex;flex-wrap:wrap;gap:2px 12px;align-items:baseline;padding:9px 14px;border-bottom:1px solid var(--line)}}
-.sources li:last-child{{border-bottom:0}}
-.sources a{{font-weight:600;color:var(--acc);min-width:170px}}
-.sources .sd{{flex:1 1 220px;color:var(--mut);font-size:13px}}
-.sources .ok,.sources .ko{{font-size:12.5px}}
-[hidden]{{display:none!important}}
-@media(max-width:640px){{.stats{{grid-template-columns:repeat(2,1fr)}} .count{{margin-left:0;width:100%}}}}
-</style></head><body><main>
-<div class="top"><h1 class="brand">L<span>3</span>NOX</h1><span class="tag">Bulletin SysOps · IT &amp; Cyber</span></div>
-<p class="date">{e(date_fr(loc)).capitalize()} · mis à jour à {loc.strftime("%H:%M")} · <a href="alertes.xml">flux RSS des alertes</a></p>
-<div class="brief">{brief}</div>
-<div class="stats">
-<div class="stat l3"><b>{n_exp}</b><span>exploitées</span></div>
-<div class="stat l2"><b>{n_crit}</b><span>critiques</span></div>
-<div class="stat l1"><b>{n_watch}</b><span>avis à surveiller</span></div>
-<div class="stat"><b>{len(news)}</b><span>actus 24 h</span></div>
-</div>
-{p1_html}
-<div class="search" role="search">
-<input id="q" type="search" placeholder="Rechercher : php, fortinet, CVE-2026-…, CERT-FR, ransomware…" aria-label="Rechercher dans le bulletin" autocomplete="off">
-<span id="qcount" aria-live="polite"></span>
-</div>
-<p id="noresult" class="empty" hidden>Aucun résultat pour cette recherche.</p>
-{section("À faire aujourd'hui", "regroupé par technologie, du plus urgent au moins urgent", cards, "actions")}
-{section("Avis à surveiller", f"CERT-FR et éditeurs · {CERT_FEEDS['avis'][1]} derniers jours", watch_html, "avis")}
-{section("Disponibilité des services", f"pages d'état officielles · {STATUS_HOURS} h", status_html(status_rows), "services")}
-{section("Actu IT & cyber", f"dernières {NEWS_HOURS} h", news_html, "actu")}
-{section("Sources", "cliquez pour ouvrir le site · état de la dernière collecte", sources_html, "sources")}
+<meta name="description" content="Bulletin SysOps du jour : failles exploitées, alertes CERT-FR, avis éditeurs et actions recommandées.">
+<meta name="theme-color" content="#EEF2F6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0E1524" media="(prefers-color-scheme: dark)">
+<link rel="alternate" type="application/rss+xml" title="{SITE_NAME} : alertes" href="alertes.xml">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="{FONTS}">
+<script>try{{var t=localStorage.getItem('l3nox:theme');if(t)document.documentElement.dataset.theme=t}}catch(_){{}}</script>
+<style>{CSS}</style></head>
+<body data-day="{loc.strftime('%Y-%m-%d')}">
+<div class="wrap"><header class="bar"><a class="logo" href="./">L<span>3</span>NOX</a>
+<p class="stamp">{e(date_fr(loc)).capitalize()}, mis à jour à {loc.strftime("%H:%M")}</p>
+<button class="theme" id="theme" type="button">Mode nuit</button></header></div>
+<div class="band {band}"><div class="wrap">
+<div class="posture"><p class="level">{level}<span class="level-cap">niveau du jour</span></p>
+<div><h1>{e(headline)}</h1><p class="lede">{e(lede)}</p><ul class="facts">{"".join(facts)}</ul></div></div>
+{toc_html}</div></div>
+<main class="wrap">
+<div class="search" role="search"><div class="field">{search_icon}
+<input id="q" type="search" placeholder="Rechercher un produit, une CVE, une source…" aria-label="Rechercher dans le bulletin" autocomplete="off">
+<span id="qcount" aria-live="polite"></span></div></div>
+<p id="noresult" class="empty" hidden>Aucun résultat. Essayez un nom de produit (php, fortinet) ou un numéro de CVE.</p>
+{section("À faire aujourd'hui", "Failles exploitées et critiques, regroupées par technologie", cards, "actions")}
+{section("Avis à surveiller", f"CERT-FR et éditeurs, {CERT_FEEDS['avis'][1]} derniers jours", watch_html, "avis")}
+{section("Disponibilité des services", f"Pages d'état officielles, dernières {STATUS_HOURS} h", status_html(status_rows), "services")}
+{section("Actu IT et cyber", f"Presse spécialisée, dernières {NEWS_HOURS} h", news_html, "actu")}
+{section("Sources", "Cliquez sur une source pour ouvrir son site", sources_html(), "sources")}
 <footer>
-<p>Périmètre : failles exploitées P1 conservées {P1_DAYS} j (CISA KEV, CERT-FR, éditeurs), CERT-FR alertes ({CERT_FEEDS['alerte'][1]} j) et avis ({CERT_FEEDS['avis'][1]} j), avis éditeurs ({VENDOR_DAYS} j), GitHub Advisory critiques ({GHSA_DAYS} j), Red Hat ({REDHAT_DAYS} j), pages d'état ({STATUS_HOURS} h), presse ({NEWS_HOURS} h).</p>
-<p>Ce bulletin est assemblé automatiquement à partir des sources : il ne vérifie pas les informations et n'analyse pas leur portée. Le niveau de priorité est déduit des mots-clés (« exploitée », « critique »…). Référez-vous toujours à l'avis officiel.</p>
-<p>Les commandes sont des exemples génériques : lisez l'avis officiel et testez avant de les appliquer en production.</p>
-</footer>
-</main>
-<script>
-const norm=s=>s.normalize('NFD').replace(/[\\u0300-\\u036f]/g,'').toLowerCase();
-const rows=[...document.querySelectorAll('#actions .row,#avis .row,#actu .row')];
-rows.forEach(r=>r.dataset.s=norm(r.innerText+' '+(r.closest('.card')?.querySelector('h3')?.innerText||'')));
-const q=document.getElementById('q'),qc=document.getElementById('qcount'),nr=document.getElementById('noresult');
-function filter(){{
-  const terms=norm(q.value).split(/\\s+/).filter(Boolean);
-  let n=0;
-  rows.forEach(r=>{{const ok=terms.every(t=>r.dataset.s.includes(t));r.hidden=!ok;if(ok)n++}});
-  document.querySelectorAll('#actions .card').forEach(c=>c.hidden=!c.querySelector('.row:not([hidden])'));
-  ['actions','avis','actu'].forEach(id=>{{const s=document.getElementById(id);
-    s.hidden=terms.length>0&&!s.querySelector('.row:not([hidden])')}});
-  qc.textContent=terms.length?n+' résultat'+(n>1?'s':''):'';
-  nr.hidden=!(terms.length&&n===0);
-  try{{history.replaceState(null,'',terms.length?'#q='+encodeURIComponent(q.value):location.pathname)}}catch(_){{}}
-}}
-q.addEventListener('input',filter);
-const h=decodeURIComponent((location.hash.match(/^#q=(.*)/)||[])[1]||'');
-if(h){{q.value=h;filter()}}
-document.addEventListener('keydown',ev=>{{if(ev.key==='/'&&document.activeElement!==q){{ev.preventDefault();q.focus()}}
-  if(ev.key==='Escape'&&document.activeElement===q){{q.value='';filter()}}}});
-const day="{loc.strftime('%Y-%m-%d')}";
-document.querySelectorAll('.steps input').forEach(cb=>{{
-  const k='l3nox:'+day+':'+cb.dataset.k;
-  try{{cb.checked=localStorage.getItem(k)==='1'}}catch(_){{}}
-  cb.addEventListener('change',()=>{{try{{localStorage.setItem(k,cb.checked?'1':'0')}}catch(_){{}}}});
-}});
-document.querySelectorAll('.copy').forEach(b=>b.addEventListener('click',async()=>{{
-  try{{await navigator.clipboard.writeText(b.previousElementSibling.innerText);b.textContent='Copié ✓'}}
-  catch(_){{b.textContent='Sélectionnez le texte'}}
-  setTimeout(()=>b.textContent='Copier',1500);
-}}));
-</script>
+<p>Ce bulletin est assemblé automatiquement toutes les 15 minutes. Il ne vérifie pas les informations : le niveau de priorité est déduit des sources (catalogue CISA, alertes CERT-FR) et de mots-clés. Référez-vous toujours à l'avis officiel.</p>
+<p>Les commandes proposées sont des exemples génériques. Testez-les avant de les appliquer en production.</p>
+</footer></main>
+<script>{JS}</script>
 </body></html>"""
 
 
