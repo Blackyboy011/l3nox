@@ -19,7 +19,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -38,6 +38,8 @@ jobs:
         env:
           SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          L3NOX_AI_URL: ${{ vars.L3NOX_AI_URL }}
+          L3NOX_AI_SECRET: ${{ secrets.L3NOX_AI_SECRET }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-pages-artifact@v3
         with:
