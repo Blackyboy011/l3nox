@@ -1,0 +1,4 @@
+# Netlify héberge uniquement le service IA de L3NOX (le site lui-même reste sur GitHub Pages).
+[build]
+  publish = "netlify/public"
+  functions = "netlify/functions"
