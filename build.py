@@ -52,6 +52,10 @@ VENDOR_FEEDS = {
     "Fortinet PSIRT": ["https://filestore.fortinet.com/fortiguard/rss/ir.xml"],
     "Microsoft MSRC": ["https://api.msrc.microsoft.com/update-guide/rss"],
     "Cisco Talos": ["https://blog.talosintelligence.com/rss/"],
+    "Kubernetes": ["https://kubernetes.io/docs/reference/issues-security/official-cve-feed/feed.xml",
+                   "https://kubernetes.io/docs/reference/issues-security/official-cve-feed/index.xml"],
+    "GitLab": ["https://about.gitlab.com/security-releases.xml"],
+    "AWS": ["https://aws.amazon.com/security/security-bulletins/rss/feed/"],
 }
 VENDOR_DAYS = 3
 
@@ -75,6 +79,17 @@ STATUS_PAGES = {
 }
 STATUS_HOURS = 24
 
+# Fins de maintenance (endoflife.date) : nom affiché -> identifiant sur endoflife.date
+EOL_PRODUCTS = {
+    "Kubernetes": "kubernetes", "PHP": "php", "Red Hat Enterprise Linux": "rhel", "Debian": "debian",
+    "Ubuntu": "ubuntu", "Windows Server": "windows-server", "PostgreSQL": "postgresql", "MySQL": "mysql",
+    "MariaDB": "mariadb", "Node.js": "nodejs", "Python": "python", "GitLab": "gitlab", "nginx": "nginx",
+    "VMware ESXi": "esxi", "Veeam Backup & Replication": "veeam-backup-and-replication",
+    "Samba": "samba", "Elasticsearch": "elasticsearch", "Apache Kafka": "apache-kafka",
+}
+EOL_PAST_DAYS = 30    # fins de maintenance survenues ces N derniers jours
+EOL_NEXT_DAYS = 90    # fins de maintenance prévues dans les N prochains jours
+
 REDHAT_URL = ("https://access.redhat.com/hydra/rest/securitydata/cve.json"
               "?after={after}&severity=critical&per_page=200")
 REDHAT_DAYS = 7
@@ -86,10 +101,29 @@ NEWS_FEEDS = {
     "IT-Connect": "https://www.it-connect.fr/feed/",
     "Le Monde Informatique": "https://www.lemondeinformatique.fr/flux-rss/thematique/securite/rss.xml",
     "Krebs on Security": "https://krebsonsecurity.com/feed/",
-    "Next": "https://next.ink/feed/",
 }
 NEWS_HOURS = 24
 NEWS_MAX = 40
+
+# Filtre des actus : un article n'est gardé que s'il parle d'au moins un de ces sujets…
+NEWS_KEEP = re.compile(
+    r"vuln[ée]rab|faille|\bcve-|correctif|\bpatch|exploit|zero-day|0-day|jour z[ée]ro"
+    r"|ran[çc]ongiciel|ransomware|malware|maliciel|logiciel malveillant|backdoor|porte d[ée]rob[ée]e"
+    r"|cyberattaque|attaque|piratage|pirat[ée]|hacker|hacked|compromis|compromission|intrusion"
+    r"|fuite de donn[ée]es|data breach|\bbreach|\bleak|phishing|hame[çc]onnage|botnet|\bddos|\bapt\s?\d+"
+    r"|infostealer|spyware|logiciel espion|supply.chain|cha[îi]ne d.approvisionnement"
+    r"|cert-fr|\banssi\b|\bcisa\b|mise [àa] jour de s[ée]curit[ée]|security update|advisory"
+    r"|\brce\b|[ée]l[ée]vation de privil[èe]ges|privilege escalation|contournement d.authentification"
+    r"|panne|outage|incident|interruption de service|indisponib"
+    r"|fin de (?:vie|support|maintenance)|end of (?:life|support)|end-of-life|\beol\b|deprecat|d[ée]pr[ée]ci"
+    r"|d[ée]commission|retrait (?:progressif )?d",
+    re.I)
+# … et n'est PAS gardé s'il parle de l'un de ceux-ci (sauf s'il cite une CVE).
+NEWS_DROP = re.compile(
+    r"lev[ée]e de fonds|valorisation|recrute|nomination|nomm[ée]|chiffre d.affaires|r[ée]sultats financiers"
+    r"|smartphone|iphone|galaxy|jeu vid[ée]o|gaming|black friday|bon plan|promo"
+    r"|mod[èe]le (?:de langage|d.ia)|poids de son mod[èe]le|\bllm\b|chatbot",
+    re.I)
 
 # Page d'accueil de chaque source (pour les liens et la section « Sources »)
 SOURCE_SITES = {
@@ -103,13 +137,16 @@ SOURCE_SITES = {
     "Fortinet PSIRT": "https://www.fortiguard.com/psirt",
     "Microsoft MSRC": "https://msrc.microsoft.com/update-guide",
     "Cisco Talos": "https://blog.talosintelligence.com/",
+    "Kubernetes": "https://kubernetes.io/docs/reference/issues-security/official-cve-feed/",
+    "GitLab": "https://about.gitlab.com/releases/categories/releases/",
+    "AWS": "https://aws.amazon.com/security/security-bulletins/",
+    "endoflife.date": "https://endoflife.date/",
     "BleepingComputer": "https://www.bleepingcomputer.com/",
     "The Hacker News": "https://thehackernews.com/",
     "Zataz": "https://www.zataz.com/",
     "IT-Connect": "https://www.it-connect.fr/",
     "Le Monde Informatique": "https://www.lemondeinformatique.fr/securite/",
     "Krebs on Security": "https://krebsonsecurity.com/",
-    "Next": "https://next.ink/",
 }
 SOURCE_DESC = {
     "CISA KEV": "Catalogue américain des vulnérabilités activement exploitées",
@@ -122,6 +159,10 @@ SOURCE_DESC = {
     "Fortinet PSIRT": "Avis de sécurité de l'éditeur (FortiOS, FortiGate…)",
     "Microsoft MSRC": "Guide des mises à jour de sécurité Microsoft",
     "Cisco Talos": "Recherches et campagnes d'attaque (renseignement sur la menace)",
+    "Kubernetes": "Flux officiel des CVE Kubernetes",
+    "GitLab": "Versions de sécurité de GitLab",
+    "AWS": "Bulletins de sécurité AWS",
+    "endoflife.date": "Dates de fin de maintenance des logiciels",
 }
 
 # Niveaux de priorité
@@ -479,8 +520,16 @@ def make_item(source, title, link, date, summary="", level=INFO, **extra) -> dic
 
 
 # ═════════════════════════ Collecte ═════════════════════════
+KEV_META: dict = {}  # version et taille du catalogue CISA, pour le résumé du haut
+
+
 def collect_kev() -> list[dict]:
     data = fetch_first(KEV_URLS, json.loads)
+    vulns = data.get("vulnerabilities", [])
+    dates = [v.get("dateAdded", "") for v in vulns if v.get("dateAdded")]
+    last = max(dates) if dates else ""
+    KEV_META.update(count=data.get("count") or len(vulns), version=data.get("catalogVersion", ""),
+                    last_added=last, last_n=dates.count(last) if last else 0)
     cutoff = (NOW - timedelta(days=KEV_DAYS)).date()
     items = []
     for v in data.get("vulnerabilities", []):
@@ -637,6 +686,41 @@ def collect_status() -> list[dict]:
     return rows
 
 
+def collect_eol() -> list[dict]:
+    """Versions arrivées (ou bientôt) en fin de maintenance, d'après endoflife.date."""
+    today = NOW.date()
+    rows, ok, ko = [], 0, 0
+    for label, slug in EOL_PRODUCTS.items():
+        try:
+            data = fetch_first([f"https://endoflife.date/api/{slug}.json",
+                                f"https://endoflife.date/api/v1/products/{slug}/"], json.loads)
+        except Exception:
+            ko += 1
+            continue
+        ok += 1
+        if isinstance(data, dict):  # format v1
+            releases = [{"cycle": r.get("name"), "eol": r.get("eolFrom"),
+                         "latest": (r.get("latest") or {}).get("name", "")}
+                        for r in (data.get("result") or {}).get("releases", [])]
+        else:
+            releases = data
+        for r in releases:
+            eol = r.get("eol")
+            if not isinstance(eol, str):
+                continue
+            try:
+                d = datetime.strptime(eol[:10], "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            delta = (d - today).days
+            if -EOL_PAST_DAYS <= delta <= EOL_NEXT_DAYS:
+                rows.append({"product": label, "slug": slug, "cycle": str(r.get("cycle", "")),
+                             "date": d, "delta": delta, "latest": str(r.get("latest") or "")})
+    STATUS.append(("endoflife.date", ok > 0, f"{ok} produits suivis" + (f", {ko} en erreur" if ko else "")))
+    rows.sort(key=lambda r: r["delta"])
+    return rows
+
+
 def collect_news() -> list[dict]:
     cutoff = NOW - timedelta(hours=NEWS_HOURS)
     items = []
@@ -648,7 +732,9 @@ def collect_news() -> list[dict]:
             continue
         n = 0
         for e in entries:
-            if e["date"] and e["date"] >= cutoff and e["title"]:
+            text = f"{e['title']} {e['summary']}"
+            relevant = NEWS_KEEP.search(text) and (CVE_RE.search(text) or not NEWS_DROP.search(text))
+            if e["date"] and e["date"] >= cutoff and e["title"] and relevant:
                 items.append(make_item(source, e["title"], e["link"], e["date"], e["summary"], INFO))
                 n += 1
         STATUS.append((source, True, f"{n} article(s)"))
@@ -866,6 +952,20 @@ border-radius:12px;padding:14px 14px;cursor:pointer;white-space:nowrap}
 .also a{color:var(--link)}
 .viewempty{margin-top:30px}
 
+/* Panorama et fins de maintenance */
+.pano{list-style:none;margin:0;padding:0;background:var(--sheet);border:1px solid var(--rule);border-radius:14px}
+.pano li{display:grid;grid-template-columns:230px 150px 1fr;gap:3px 16px;align-items:baseline;padding:11px 20px;border-top:1px solid var(--rule)}
+.pano li:first-child{border-top:0}
+.pano .dn{font-weight:700;color:var(--ink);text-decoration:none}
+.pano a.dn:hover{color:var(--link);text-decoration:underline}
+.pano .cnt{display:flex;flex-wrap:wrap;gap:6px}
+.mini{font:800 11.5px/1 var(--display);font-stretch:118%;color:var(--ontag);background:var(--lvc);border-radius:5px;padding:4px 6px}
+.calm{color:var(--muted);font-size:14px;font-weight:600}
+.pano .det{font-size:15px;color:var(--muted);min-width:0;overflow-wrap:anywhere}
+.pano .det a{color:var(--ink)}
+.eol li{grid-template-columns:260px 1fr auto}
+.when-past{color:var(--p2)}.when-soon{color:var(--p3)}.when-later{color:var(--muted);font-weight:400}
+
 /* Fiches actions */
 .concern{margin:4px 20px 0;color:var(--muted);font-size:15px}
 
@@ -878,6 +978,7 @@ box-shadow:0 10px 30px rgba(10,16,28,.3);max-width:calc(100% - 32px)}
 .filters{flex-wrap:nowrap;overflow-x:auto;margin-left:-20px;margin-right:-20px;padding:0 20px 2px;scrollbar-width:none}
 .filters::-webkit-scrollbar{display:none}
 .lvh{padding:12px 14px 2px}.concern{margin:4px 14px 0}
+.pano li,.eol li{grid-template-columns:1fr;padding:11px 14px}
 .clear{padding:13px 12px}
 }
 """
@@ -1141,6 +1242,70 @@ def fiche_card(pid, items: list[dict]) -> str:
             f'<ol class="steps">{checklist}</ol>{cmds_html(pb["cmds"])}</div></article>')
 
 
+DOMAINS = [  # (nom, playbooks rattachés, produits de fin de maintenance rattachés)
+    ("Linux et distributions", ["kernel", "glibc", "sudo", "openssh", "openssl"], ["Red Hat Enterprise Linux", "Debian", "Ubuntu"]),
+    ("Windows et Active Directory", ["windows", "samba"], ["Windows Server", "Samba"]),
+    ("Réseaux, VPN et pare-feu", ["network"], []),
+    ("Virtualisation", ["virtu"], ["VMware ESXi"]),
+    ("Conteneurs et Kubernetes", ["containers"], ["Kubernetes"]),
+    ("Serveurs web et PHP", ["apache", "nginx", "php", "cms"], ["PHP", "nginx"]),
+    ("Langages et frameworks", ["java"], ["Node.js", "Python"]),
+    ("Bases de données et data", ["data"], ["PostgreSQL", "MySQL", "MariaDB", "Elasticsearch", "Apache Kafka"]),
+    ("DevOps et CI/CD", ["devops"], ["GitLab"]),
+    ("Sauvegardes", ["backup"], ["Veeam Backup & Replication"]),
+    ("Postes et navigateurs", ["browsers"], []),
+]
+
+
+def eol_when(r: dict) -> tuple[str, str]:
+    d = r["delta"]
+    if d < 0:
+        return "when-past", f"terminée depuis {plural(-d, 'jour', 'jours')}"
+    if d == 0:
+        return "when-past", "se termine aujourd'hui"
+    return ("when-soon" if d <= 30 else "when-later"), f"dans {plural(d, 'jour', 'jours')}"
+
+
+def eol_html(rows: list[dict]) -> str:
+    if not rows:
+        return '<p class="empty">Aucune fin de maintenance récente ou prochaine parmi les logiciels suivis.</p>'
+    out = []
+    for r in rows:
+        cls, txt = eol_when(r)
+        latest = f'dernière version {e(r["latest"])}' if r["latest"] else ""
+        out.append(f'<li><a class="dn" href="https://endoflife.date/{e(r["slug"])}" target="_blank" rel="noopener">'
+                   f'{e(r["product"])} {e(r["cycle"])}</a>'
+                   f'<span>fin de maintenance le {r["date"].strftime("%d/%m/%Y")} <b class="{cls}">{e(txt)}</b></span>'
+                   f'<span class="det">{latest}</span></li>')
+    return f'<ul class="pano eol">{"".join(out)}</ul>'
+
+
+def panorama_html(entries: list[dict], eol: list[dict], status_rows: list[dict]) -> str:
+    out = []
+    for name, pbs, prods in DOMAINS:
+        items = [i for i in entries if i["playbook"] in pbs and i["level"] > INFO]
+        badges = "".join(f'<span class="mini lv{lv}">{plural(n, LEVEL_TAG[lv], LEVEL_TAG[lv])}</span>'
+                         for lv in (EXPLOITED, CRITICAL, WATCH)
+                         if (n := sum(1 for i in items if i["level"] == lv)))
+        notes = []
+        if items:
+            top = max(items, key=lambda i: (i["level"], i["date"] or NOW))
+            notes.append(f'<a href="#pb-{e(top["playbook"])}">{e(top["title"][:110])}</a>')
+        for r in (r for r in eol if r["product"] in prods and r["delta"] <= 30):
+            notes.append(f'{e(r["product"])} {e(r["cycle"])} : fin de maintenance {e(eol_when(r)[1])}')
+        detail = " · ".join(notes) if notes else "Rien de nouveau"
+        out.append(f'<li><span class="dn">{e(name)}</span><span class="cnt">{badges or "<span class=calm>RAS</span>"}</span>'
+                   f'<span class="det">{detail}</span></li>')
+    outages = [r["name"] for r in status_rows if any(not i["resolved"] for i in r["incidents"])]
+    solved = [r["name"] for r in status_rows if r["incidents"] and r["name"] not in outages]
+    cloud = (f"Panne en cours : {', '.join(outages)}" if outages else
+             (f"Incidents résolus : {', '.join(solved)}" if solved else "Aucune panne signalée"))
+    badge = '<span class="mini lv3">panne</span>' if outages else '<span class="calm">RAS</span>'
+    out.append(f'<li><span class="dn">Cloud et services en ligne</span><span class="cnt">{badge}</span>'
+               f'<span class="det"><a href="#services">{e(cloud)}</a></span></li>')
+    return f'<ul class="pano">{"".join(out)}</ul>'
+
+
 def day_label(d) -> tuple[str, str]:
     today = NOW.astimezone(PARIS).date()
     if d == today:
@@ -1150,7 +1315,8 @@ def day_label(d) -> tuple[str, str]:
     return f"{JOURS[d.weekday()].capitalize()} {d.day} {MOIS[d.month - 1]}", ""
 
 
-def render(kev, cert, redhat, vendors, ghsa, status_rows, news) -> str:
+def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None) -> str:
+    eol = eol or []
     entries = merge_entries(kev + cert + redhat + vendors + ghsa + news)
     today = NOW.astimezone(PARIS).date()
     loc = NOW.astimezone(PARIS)
@@ -1214,9 +1380,17 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news) -> str:
         lede = "Bon moment pour avancer sur les mises à jour courantes."
     facts = [f'<li class="down">Panne en cours : {e(", ".join(outages))}</li>' if outages
              else '<li class="good">Aucune panne en cours sur les services suivis</li>',
-             f"<li>{plural(n_watch, 'avis à surveiller', 'avis à surveiller')}</li>",
-             '<li><a href="#fiches">Fiches « Que faire »</a></li>',
-             '<li><a href="alertes.xml">Flux RSS des alertes</a></li>']
+             f"<li>{plural(n_watch, 'avis à surveiller', 'avis à surveiller')}</li>"]
+    if KEV_META.get("count"):
+        kev_txt = f"Catalogue CISA : {KEV_META['count']:,} failles exploitées connues".replace(",", " ")
+        if KEV_META.get("last_added"):
+            kev_txt += (f", dernier ajout le {due_fr(KEV_META['last_added'])[:5]}"
+                        f" (+{KEV_META['last_n']})")
+        facts.append(f"<li>{e(kev_txt)}</li>")
+    n_eol = sum(1 for r in eol if r["delta"] <= 30)
+    if n_eol:
+        facts.append(f'<li><a href="#eol">{plural(n_eol, "fin de maintenance", "fins de maintenance")} à traiter</a></li>')
+    facts.append('<li><a href="#panorama">Panorama par domaine</a></li>')
 
     filters = ('<button class="f" data-v="all" type="button"><i></i>Tout <b></b></button>'
                '<button class="f lv3" data-v="p1" type="button"><i></i>P1 <b></b></button>'
@@ -1256,6 +1430,8 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news) -> str:
 <span id="qcount" aria-live="polite"></span><button class="clear" id="clear" type="button">Vider la liste</button></div></div>
 <div id="fil">{"".join(fil)}</div>
 <p id="viewempty" class="empty viewempty" hidden></p>
+{section("Panorama par domaine", "Où en est chaque partie de l'infrastructure", panorama_html(entries, eol, status_rows), "panorama")}
+{section("Fins de maintenance", f"Versions arrivées en fin de vie ces {EOL_PAST_DAYS} derniers jours ou dans les {EOL_NEXT_DAYS} prochains", eol_html(eol), "eol")}
 {section("Fiches « Que faire »", "Actions recommandées par technologie", fiches, "fiches")}
 {section("Disponibilité des services", f"Pages d'état officielles, dernières {STATUS_HOURS} h", status_html(status_rows), "services")}
 {section("Sources", "Cliquez sur une source pour ouvrir son site", sources_html(), "sources")}
@@ -1372,11 +1548,12 @@ def main(out_dir: str = "_site") -> None:
     vendors = collect_vendors()
     ghsa = safe("GitHub Advisory", collect_ghsa)
     status_rows = collect_status()
+    eol = collect_eol()
     news = collect_news()
 
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render(kev, cert, redhat, vendors, ghsa, status_rows, news))
+        f.write(render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol))
     urgent = [i for i in kev + cert + redhat + vendors + ghsa if i["level"] >= CRITICAL]
     with open(os.path.join(out_dir, "alertes.xml"), "w", encoding="utf-8") as f:
         f.write(render_rss(urgent))
