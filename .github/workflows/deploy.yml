@@ -2,8 +2,8 @@ name: Build & deploy news
 
 on:
   schedule:
-    - cron: "17 */2 * * *"
-  workflow_dispatch:
+    - cron: "*/15 * * * *"   # toutes les 15 minutes, jour et nuit
+  workflow_dispatch:          # bouton "Run workflow" manuel
   push:
     branches: [main]
 
@@ -14,11 +14,12 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -27,9 +28,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # Mémoire des alertes déjà notifiées (évite de recevoir deux fois la même)
+      - uses: actions/cache@v4
+        with:
+          path: state
+          key: l3nox-state-${{ github.run_id }}
+          restore-keys: l3nox-state-
       - run: python build.py
         env:
           SITE_DOMAIN: ${{ vars.SITE_DOMAIN }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
