@@ -17,6 +17,7 @@ Aucune dépendance externe : uniquement la bibliothèque standard de Python 3.9+
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import os
@@ -102,6 +103,20 @@ NEWS_FEEDS = {
     "Le Monde Informatique": "https://www.lemondeinformatique.fr/flux-rss/thematique/securite/rss.xml",
     "Krebs on Security": "https://krebsonsecurity.com/feed/",
 }
+# Synthèse rédigée par l'IA, via la fonction Netlify « l3nox-ia » (crédits gratuits Netlify, sans clé payante).
+# Variable GitHub L3NOX_AI_URL = adresse de la fonction ; secret GitHub L3NOX_AI_SECRET = mot de passe partagé.
+# Sans ces deux réglages, la section « Briefing du jour » n'apparaît pas.
+AI_URL = os.environ.get("L3NOX_AI_URL", "")
+AI_SECRET = os.environ.get("L3NOX_AI_SECRET", "")
+AI_KEY = os.environ.get("ANTHROPIC_API_KEY", "")   # optionnel : clé API Anthropic directe (payante)
+AI_MODEL = os.environ.get("AI_MODEL") or "claude-haiku-5-5"   # le plus économe en crédits
+AI_MIN_HOURS = 6        # pas de nouvelle rédaction avant N heures… sauf si une nouvelle P1 apparaît
+AI_MAX_PER_DAY = 4      # garde-fous pour ne jamais épuiser les 300 crédits Netlify du mois
+AI_MAX_PER_MONTH = 100
+AI_MAX_ITEMS = 60
+
+# Presse spécialisée : désactivée (seules les sources officielles alimentent le bulletin).
+INCLUDE_PRESS = False
 NEWS_HOURS = 24
 NEWS_MAX = 40
 
@@ -966,6 +981,38 @@ border-radius:12px;padding:14px 14px;cursor:pointer;white-space:nowrap}
 .eol li{grid-template-columns:260px 1fr auto}
 .when-past{color:var(--p2)}.when-soon{color:var(--p3)}.when-later{color:var(--muted);font-weight:400}
 
+
+/* Briefing rédigé */
+#briefing{padding-top:28px}
+.bcard{background:var(--sheet);border:1px solid var(--rule);border-radius:14px;padding:22px 26px 24px}
+.exec{font-size:19px;line-height:1.55;margin:0;max-width:68ch;text-wrap:pretty}
+.bcard h3{font:750 18px/1.3 var(--display);font-stretch:108%;margin:26px 0 10px}
+table.prio{width:100%;border-collapse:collapse;font-size:15.5px}
+.prio th{text-align:left;font-weight:700;color:var(--muted);font-size:14px;padding:6px 12px 6px 0;border-bottom:2px solid var(--rule)}
+.prio td{padding:11px 12px 11px 0;border-bottom:1px solid var(--rule);vertical-align:top}
+.prio td:first-child{white-space:nowrap;width:1%}
+.prio .subj{font-weight:700;width:30%}.prio .subj a{color:var(--ink)}.prio .subj a:hover{color:var(--link)}
+.todo-line{display:block;margin-top:4px;font-weight:600}
+.tagx{font-size:13px;font-weight:600;color:var(--muted);margin-left:6px}
+.pt{border-left:4px solid var(--lvc);padding:2px 0 2px 16px;margin:20px 0}
+.pt h4{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font:700 17px/1.3 var(--body);margin:0 0 6px}
+.pt p{margin:6px 0;max-width:75ch}
+.conf{font-size:15px;color:var(--muted)}.conf b{color:var(--ink)}
+.vtab{border-collapse:collapse;font-size:14.5px;margin:10px 0}
+.vtab th,.vtab td{text-align:left;padding:5px 18px 5px 0;border-bottom:1px solid var(--rule)}
+.vtab th{color:var(--muted);font-weight:700}
+.bnote{font-size:14px}
+.watch{margin:0;padding-left:20px;max-width:75ch}.watch li{margin:5px 0}
+.actsday{list-style:none;margin:0;padding:0}
+.actsday li{display:flex;align-items:baseline;gap:10px;padding:8px 0;border-bottom:1px solid var(--rule)}
+.actsday li:last-child{border-bottom:0}
+.concl{font-weight:600;margin:20px 0 0;max-width:72ch}
+@media (max-width:680px){
+.bcard{padding:16px 16px 18px}.exec{font-size:17px}
+.prio thead{display:none}.prio tr{display:block;padding:10px 0;border-bottom:1px solid var(--rule)}
+.prio td{display:block;border:0;padding:2px 0;width:auto!important}
+}
+
 /* Fiches actions */
 .concern{margin:4px 20px 0;color:var(--muted);font-size:15px}
 
@@ -1149,13 +1196,15 @@ def sources_html() -> str:
     alias = {"CERT-FR alerte": "CERT-FR alertes"}
     rows, n_ok = [], 0
     for name, url in SOURCE_SITES.items():
+        if name in NEWS_FEEDS and not INCLUDE_PRESS:
+            continue
         ok, detail = st.get(alias.get(name, name), (None, "non interrogée"))
         n_ok += bool(ok)
         cls, txt = ("okk", detail) if ok else ("ko", "indisponible") if ok is False else ("unk", detail)
         rows.append(f'<li><a href="{e(url)}" target="_blank" rel="noopener">{e(name)}</a>'
                     f'<span class="sd">{e(SOURCE_DESC.get(name, "Actualité IT et cybersécurité"))}</span>'
                     f'<span class="{cls}">{e(txt)}</span></li>')
-    return (f'<details class="srcs"><summary>{n_ok} sources sur {len(SOURCE_SITES)} lues lors de la dernière mise à jour</summary>'
+    return (f'<details class="srcs"><summary>{n_ok} sources sur {len(rows)} lues lors de la dernière mise à jour</summary>'
             f'<ul>{"".join(rows)}</ul></details>')
 
 
@@ -1306,6 +1355,73 @@ def panorama_html(entries: list[dict], eol: list[dict], status_rows: list[dict])
     return f'<ul class="pano">{"".join(out)}</ul>'
 
 
+def lv_of(n) -> int:
+    return {"P1": EXPLOITED, "P2": CRITICAL, "P3": WATCH}.get(str(n).strip().upper()[:2], INFO)
+
+
+def briefing_html(b) -> str:
+    if not b or not isinstance(b.get("data"), dict):
+        return ""
+    d = b["data"]
+    gen = datetime.fromisoformat(b["generated"]).astimezone(PARIS)
+    txt = lambda k: str(d.get(k) or "").strip()
+    lst = lambda k: [x for x in (d.get(k) or []) if isinstance(x, (dict, str))]
+
+    def tag(n):
+        n = str(n or "").strip()
+        lv = lv_of(n)
+        extra = n[2:].strip()
+        return (f'<span class="tag lv{lv}">{e(n[:2].upper() or "Info")}</span>'
+                + (f'<span class="tagx">{e(extra)}</span>' if extra else ""))
+
+    def link(url, label):
+        url = str(url or "")
+        return f'<a href="{e(url)}" target="_blank" rel="noopener">{label}</a>' if url.startswith("http") else label
+
+    parts = [f'<p class="exec">{e(txt("synthese"))}</p>']
+    prio = [p for p in lst("prioritaires") if isinstance(p, dict)]
+    if prio:
+        rows = "".join(f'<tr><td>{tag(p.get("niveau"))}</td>'
+                       f'<td class="subj">{link(p.get("lien"), e(str(p.get("sujet", ""))))}</td>'
+                       f'<td>{e(str(p.get("impact", "")))}<span class="todo-line">{e(str(p.get("action", "")))}</span></td></tr>'
+                       for p in prio)
+        parts.append('<h3>Sécurité prioritaire</h3><table class="prio"><thead><tr><th>Priorité</th><th>Sujet</th>'
+                     f'<th>Impact et action</th></tr></thead><tbody>{rows}</tbody></table>')
+    points = [p for p in lst("points") if isinstance(p, dict)]
+    if points:
+        parts.append("<h3>Autres points importants</h3>")
+    for p in points:
+        vers = [v for v in (p.get("versions") or []) if isinstance(v, dict) and v.get("produit")]
+        vtab = ("<table class=\"vtab\"><thead><tr><th>Produit / versions</th><th>Correctif</th></tr></thead><tbody>"
+                + "".join(f'<tr><td>{e(str(v.get("produit", "")))}</td><td>{e(str(v.get("corrige", "")))}</td></tr>' for v in vers)
+                + "</tbody></table>") if vers else ""
+        conf = "".join(f'<p class="conf"><b>{lab}</b> {e(str(p.get(k)))}</p>'
+                       for lab, k in (("Confirmé :", "confirme"), ("Non confirmé :", "non_confirme")) if p.get(k))
+        parts.append(f'<article class="pt lv{lv_of(p.get("niveau"))}"><h4>{tag(p.get("niveau"))}{e(str(p.get("titre", "")))}</h4>'
+                     f'<p>{e(str(p.get("contexte", "")))}</p>{vtab}'
+                     + (f'<p><b>Mesures :</b> {e(str(p.get("mesures")))}</p>' if p.get("mesures") else "")
+                     + conf + (f'<p class="bnote">{link(p.get("lien"), "Avis officiel")}</p>' if p.get("lien") else "")
+                     + "</article>")
+    if txt("services") or txt("fins_de_maintenance"):
+        parts.append("<h3>Services et fins de maintenance</h3>"
+                     + (f'<p>{e(txt("services"))}</p>' if txt("services") else "")
+                     + (f'<p>{e(txt("fins_de_maintenance"))}</p>' if txt("fins_de_maintenance") else ""))
+    watch = [str(w) for w in lst("a_surveiller") if isinstance(w, str)]
+    if watch:
+        parts.append("<h3>À surveiller</h3><ul class=\"watch\">" + "".join(f"<li>{e(w)}</li>" for w in watch) + "</ul>")
+    acts = [a for a in lst("actions") if isinstance(a, dict)]
+    if acts:
+        parts.append("<h3>Actions SysOps du jour</h3><ul class=\"actsday\">"
+                     + "".join(f'<li>{tag(a.get("niveau"))}<span>{e(str(a.get("action", "")))}</span></li>' for a in acts)
+                     + "</ul>")
+    if txt("conclusion"):
+        parts.append(f'<p class="concl">{e(txt("conclusion"))}</p>')
+    sub = (f"Rédigé par l'IA à {gen.strftime('%H:%M')} le {gen.strftime('%d/%m')} à partir des sources officielles listées plus bas. "
+           "Vérifiez toujours les détails dans l'avis officiel.")
+    return (f'<section id="briefing"><div class="sh"><h2>Briefing du jour</h2><p>{e(sub)}</p></div>'
+            f'<div class="bcard">{"".join(parts)}</div></section>')
+
+
 def day_label(d) -> tuple[str, str]:
     today = NOW.astimezone(PARIS).date()
     if d == today:
@@ -1315,7 +1431,7 @@ def day_label(d) -> tuple[str, str]:
     return f"{JOURS[d.weekday()].capitalize()} {d.day} {MOIS[d.month - 1]}", ""
 
 
-def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None) -> str:
+def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefing=None) -> str:
     eol = eol or []
     entries = merge_entries(kev + cert + redhat + vendors + ghsa + news)
     today = NOW.astimezone(PARIS).date()
@@ -1396,10 +1512,11 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None) -> str
                '<button class="f lv3" data-v="p1" type="button"><i></i>P1 <b></b></button>'
                '<button class="f lv2" data-v="p2" type="button"><i></i>P2 <b></b></button>'
                '<button class="f lv1" data-v="p3" type="button"><i></i>P3 <b></b></button>'
-               '<button class="f lv0" data-v="news" type="button"><i></i>Actus <b></b></button>'
                '<span class="sep" aria-hidden="true"></span>'
                '<button class="f fdone" data-v="done" type="button"><i></i>Validées <b></b></button>'
                '<button class="f fhid" data-v="hidden" type="button"><i></i>Écartées <b></b></button>')
+    if INCLUDE_PRESS:
+        filters = filters.replace('<span class="sep"', '<button class="f lv0" data-v="news" type="button"><i></i>Actus <b></b></button><span class="sep"', 1)
     search_icon = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">'
                    '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>')
 
@@ -1424,6 +1541,7 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None) -> str
 <div><h1>{e(headline)}</h1><p class="lede">{e(lede)}</p><ul class="facts">{"".join(facts)}</ul></div></div>
 </div></div>
 <main class="wrap">
+{briefing_html(briefing)}
 <div class="tools"><div class="filters" role="group" aria-label="Filtrer par niveau">{filters}</div>
 <div class="field">{search_icon}
 <input id="q" type="search" placeholder="Rechercher un produit, une CVE, une source…" aria-label="Rechercher" autocomplete="off">
@@ -1460,6 +1578,146 @@ def render_rss(urgent: list[dict]) -> str:
             "<description>Vulnérabilités exploitées et critiques du jour</description>"
             f"<language>fr</language><lastBuildDate>{format_datetime(NOW)}</lastBuildDate>"
             + "".join(entries) + "</channel></rss>")
+
+
+# ═════════════════════ Synthèse rédigée par l'IA ═════════════════════
+BRIEF_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "briefing.json")
+
+AI_SYSTEM = """Tu es l'analyste SysOps qui rédige chaque matin le briefing de veille d'un administrateur
+systèmes et réseaux français (parc Linux Red Hat, Windows / Active Directory, Samba, virtualisation,
+pare-feu et VPN, bases de données, CI/CD, sauvegardes, cloud).
+
+Règles impératives :
+- Tu t'appuies UNIQUEMENT sur les données fournies (avis officiels CISA, CERT-FR, éditeurs, Red Hat,
+  GitHub Advisory, pages d'état, fins de maintenance). N'invente aucune version, aucun chiffre, aucun fait.
+  Si une version corrigée n'apparaît pas dans les données, écris « voir l'avis officiel ».
+- Distingue toujours ce qui est confirmé (exploitation listée par la CISA, alerte CERT-FR, éditeur qui
+  confirme) de ce qui ne l'est pas.
+- Priorités : P1 = exploitation confirmée ; P2 = critique ou impact opérationnel fort sans exploitation
+  confirmée ; P3 = à surveiller. Regroupe les doublons (même CVE vue par plusieurs sources).
+- Ne transforme pas chaque avis en urgence : retiens ce qui compte vraiment pour l'exploitation.
+- Français clair, phrases courtes, ton professionnel, sans emoji.
+
+Réponds UNIQUEMENT par un objet JSON valide, sans texte autour, de la forme :
+{"synthese": "2 à 4 phrases : le risque dominant du jour et ce qui a changé",
+ "prioritaires": [{"niveau": "P1", "sujet": "Produit — CVE", "impact": "…", "action": "…", "lien": "url de la donnée"}],
+ "points": [{"niveau": "P2", "titre": "…", "contexte": "…",
+             "versions": [{"produit": "…", "corrige": "…"}], "mesures": "…",
+             "confirme": "…", "non_confirme": "…", "lien": "url"}],
+ "services": "1 à 2 phrases sur les pannes et incidents des services suivis",
+ "fins_de_maintenance": "1 phrase, ou chaîne vide",
+ "a_surveiller": ["…"],
+ "actions": [{"niveau": "P1", "action": "…"}],
+ "conclusion": "1 à 2 phrases"}
+« prioritaires » : au plus 6 éléments (P1 d'abord). « points » : au plus 4 sujets détaillés (P2 utiles).
+« actions » : au plus 8 actions concrètes, triées par priorité."""
+
+
+def ai_input(entries: list[dict], eol: list[dict], status_rows: list[dict]) -> str:
+    loc = NOW.astimezone(PARIS)
+    lines = [f"Date : {date_fr(loc)}, {loc.strftime('%H:%M')} (heure de Paris)."]
+    if KEV_META.get("count"):
+        lines.append(f"Catalogue CISA KEV : {KEV_META['count']} entrées, version {KEV_META.get('version', '?')}, "
+                     f"dernier ajout le {KEV_META.get('last_added', '?')} ({KEV_META.get('last_n', 0)} entrée(s) ce jour-là).")
+    lines.append("\n## Alertes (niveau calculé, source, date, titre, CVE, résumé, lien)")
+    picked = sorted((i for i in entries if i["level"] >= WATCH),
+                    key=lambda i: (-i["level"], -(i["date"].timestamp() if i["date"] else 0)))[:AI_MAX_ITEMS]
+    for i in picked:
+        also = ", ".join(sorted({a["source"] for a in i.get("also", [])}))
+        lines.append(f"- [{LEVEL_TAG[i['level']]}] {i['source']}{' (aussi : ' + also + ')' if also else ''} | "
+                     f"{(i['date'] or NOW).astimezone(PARIS).strftime('%d/%m %H:%M')} | {i['title']} | "
+                     f"{', '.join(i['cves'][:4]) or '-'} | {i['summary'][:300]}"
+                     f"{' | Action CISA : ' + i['action'] if i['action'] else ''} | {i['link']}")
+    lines.append("\n## Pages d'état des services (24 h)")
+    for r in status_rows:
+        if r["ok"] is None:
+            lines.append(f"- {r['name']} : état non récupéré")
+        elif not r["incidents"]:
+            lines.append(f"- {r['name']} : aucun incident")
+        else:
+            for inc in r["incidents"]:
+                lines.append(f"- {r['name']} : {inc['title']} ({'résolu' if inc['resolved'] else 'EN COURS'})")
+    lines.append("\n## Fins de maintenance (passées depuis peu ou à venir)")
+    for r in eol:
+        lines.append(f"- {r['product']} {r['cycle']} : fin le {r['date'].strftime('%d/%m/%Y')} "
+                     f"({'il y a ' + str(-r['delta']) + ' j' if r['delta'] < 0 else 'dans ' + str(r['delta']) + ' j'}), "
+                     f"dernière version {r['latest'] or '?'}")
+    return "\n".join(lines)
+
+
+def ai_call(prompt: str) -> dict:
+    body = {"model": AI_MODEL, "max_tokens": 3500, "system": AI_SYSTEM,
+            "messages": [{"role": "user", "content": prompt}]}
+    if AI_URL:  # fonction Netlify (AI Gateway)
+        req = urllib.request.Request(AI_URL, data=json.dumps({"system": AI_SYSTEM, "prompt": prompt,
+                                                               "model": AI_MODEL, "max_tokens": 3500}).encode(),
+                                     headers={"content-type": "application/json", "x-l3nox-secret": AI_SECRET,
+                                              "User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=90) as r:
+            resp = json.loads(r.read())
+        text = resp.get("text", "")
+        if resp.get("usage"):
+            u = resp["usage"]
+            print(f"[ok] Synthèse IA : {u.get('input_tokens', '?')} tokens lus, {u.get('output_tokens', '?')} écrits.")
+    else:       # clé API directe
+        req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=json.dumps(body).encode(),
+                                     headers={"x-api-key": AI_KEY, "anthropic-version": "2023-06-01",
+                                              "content-type": "application/json"})
+        with urllib.request.urlopen(req, timeout=180) as r:
+            resp = json.loads(r.read())
+        text = "".join(b.get("text", "") for b in resp.get("content", []) if b.get("type") == "text")
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+    data = json.loads(text[text.find("{"): text.rfind("}") + 1])
+    if not isinstance(data, dict) or "synthese" not in data:
+        raise ValueError("réponse inattendue")
+    return data
+
+
+def get_briefing(entries: list[dict], eol: list[dict], status_rows: list[dict]):
+    """Renvoie la synthèse (nouvelle ou en cache), ou None si l'IA n'est pas configurée."""
+    try:
+        with open(BRIEF_FILE, encoding="utf-8") as f:
+            cached = json.load(f)
+    except (OSError, ValueError):
+        cached = None
+    if not ((AI_URL and AI_SECRET) or AI_KEY):
+        print("[--] Synthèse IA : L3NOX_AI_URL / L3NOX_AI_SECRET absents, section non affichée.")
+        return None
+    counts = (cached or {}).get("calls", {})
+    today, month = NOW.strftime("%Y-%m-%d"), NOW.strftime("%Y-%m")
+    n_day = counts.get(today, 0)
+    n_month = sum(v for k, v in counts.items() if k.startswith(month))
+    sig_items = sorted(f"{entry_id(i)}:{i['level']}" for i in entries if i["level"] >= WATCH)
+    sig = hashlib.sha256("|".join(sig_items).encode()).hexdigest()
+    p1 = {entry_id(i) for i in entries if i["level"] == EXPLOITED}
+    if cached and cached.get("generated"):
+        age_h = (NOW - datetime.fromisoformat(cached["generated"])).total_seconds() / 3600
+        new_p1 = bool(p1 - set(cached.get("p1", [])))
+        if cached.get("sig") == sig or (age_h < AI_MIN_HOURS and not new_p1):
+            print(f"[ok] Synthèse IA : réutilisée (rédigée il y a {age_h:.1f} h).")
+            return cached
+    if n_day >= AI_MAX_PER_DAY or n_month >= AI_MAX_PER_MONTH:
+        print(f"[--] Synthèse IA : plafond atteint ({n_day} aujourd'hui, {n_month} ce mois-ci), précédente réutilisée.")
+        return cached
+    try:
+        data = ai_call(ai_input(entries, eol, status_rows))
+    except Exception as e:
+        print(f"[!!] Synthèse IA : échec ({type(e).__name__}: {e}).")
+        stub = dict(cached or {})  # on compte l'essai (même raté) pour respecter les plafonds
+        stub["calls"] = dict(counts, **{today: n_day + 1})
+        os.makedirs(os.path.dirname(BRIEF_FILE) or ".", exist_ok=True)
+        with open(BRIEF_FILE, "w", encoding="utf-8") as f:
+            json.dump(stub, f, ensure_ascii=False)
+        return cached
+    counts[today] = n_day + 1
+    counts = {k: v for k, v in counts.items() if k >= (NOW - timedelta(days=62)).strftime("%Y-%m-%d")}
+    out = {"sig": sig, "p1": sorted(p1), "generated": NOW.isoformat(), "model": AI_MODEL, "data": data,
+           "calls": counts}
+    os.makedirs(os.path.dirname(BRIEF_FILE) or ".", exist_ok=True)
+    with open(BRIEF_FILE, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False)
+    print("[ok] Synthèse IA : nouvelle rédaction.")
+    return out
 
 
 # ═════════════════════ Notifications push (ntfy) ═════════════════════
@@ -1549,11 +1807,12 @@ def main(out_dir: str = "_site") -> None:
     ghsa = safe("GitHub Advisory", collect_ghsa)
     status_rows = collect_status()
     eol = collect_eol()
-    news = collect_news()
+    news = collect_news() if INCLUDE_PRESS else []
+    briefing = get_briefing(merge_entries(kev + cert + redhat + vendors + ghsa + news), eol, status_rows)
 
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as f:
-        f.write(render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol))
+        f.write(render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol, briefing))
     urgent = [i for i in kev + cert + redhat + vendors + ghsa if i["level"] >= CRITICAL]
     with open(os.path.join(out_dir, "alertes.xml"), "w", encoding="utf-8") as f:
         f.write(render_rss(urgent))
