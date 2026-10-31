@@ -122,10 +122,10 @@ AI_MAX_PER_DAY = 4      # garde-fous pour ne jamais épuiser les 300 crédits Ne
 AI_MAX_PER_MONTH = 100
 AI_MAX_ITEMS = 60
 # Articles rédigés (un par alerte P1/P2, rédigé une seule fois puis conservé)
-AI_POSTS_PER_RUN = 6
-AI_POSTS_PER_DAY = 20
-AI_POSTS_PER_MONTH = 300
-AI_POSTS_DAYS = 7       # on ne rédige que pour les alertes de moins de N jours
+AI_POSTS_PER_RUN = 10
+AI_POSTS_PER_DAY = 40
+AI_POSTS_PER_MONTH = 600
+AI_POSTS_DAYS = 14      # on ne rédige que pour les alertes de moins de N jours (sauf si le briefing les cite)
 
 # Presse spécialisée : désactivée (seules les sources officielles alimentent le bulletin).
 INCLUDE_PRESS = False
@@ -1100,6 +1100,24 @@ details.sync summary{cursor:pointer;font-weight:700;color:var(--link)}
 #syncform button{font:600 14px var(--body);border-radius:8px;padding:9px 12px;cursor:pointer;border:1px solid var(--rule);background:var(--sheet);color:var(--ink)}
 #syncform button[type=submit]{background:var(--link);border-color:var(--link);color:var(--ontag)}
 #syncmsg{min-height:1.2em;margin:4px 0}
+.cvelink{font-family:var(--mono);font-size:.92em;font-weight:600;color:var(--link)}
+.row{scroll-margin-top:140px}
+.row.flash{box-shadow:0 0 0 3px color-mix(in srgb,var(--link) 45%,transparent);border-radius:8px;transition:box-shadow .3s}
+/* Fiches dépliables du briefing */
+tr.has-detail{cursor:pointer}
+tr.has-detail:hover td,tr.has-detail.is-open td{background:color-mix(in srgb,var(--link) 6%,var(--sheet))}
+tr.has-detail:focus-visible{outline:3px solid var(--link);outline-offset:-3px}
+.dt-cell{width:1%;white-space:nowrap;text-align:right}
+.dt-btn{font:700 13px/1 var(--body);color:var(--link);background:var(--sheet);border:1px solid var(--rule);border-radius:8px;padding:7px 10px;cursor:pointer}
+tr.is-open .dt-btn{background:var(--link);border-color:var(--link);color:var(--ontag)}
+tr.dt-row>td{white-space:normal!important;width:auto!important;padding:0 0 14px!important;background:color-mix(in srgb,var(--link) 4%,var(--sheet))}
+.dt{border-left:4px solid var(--link);padding:14px 18px 6px;font-size:15.5px}
+.dt-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 6px;font-weight:700}
+.dt-head a{color:var(--ink)}
+.dt .pbody table.prio td:first-child{white-space:normal;width:32%;font-weight:600}
+.dt-wait{color:var(--muted);font-style:italic}
+.dt-src{font-size:14.5px}.dt-jump{font-size:14.5px;font-weight:600}
+@media (max-width:680px){.dt-cell{text-align:left}tr.dt-row>td{padding:0 0 10px!important}.dt{padding:12px 12px 4px}}
 /* Fiches actions */
 .concern{margin:4px 20px 0;color:var(--muted);font-size:15px}
 
@@ -1168,7 +1186,9 @@ function paint(){
   document.querySelectorAll('#fil .day').forEach(function(d){d.hidden=!d.querySelector('.lvblock:not([hidden])')});
   var mode=view+'|'+terms.join(' ');
   if(mode!==lastMode){document.querySelectorAll('#fil details.dayfold').forEach(function(d){d.open=(view!=='all'||terms.length>0)});
-    document.querySelectorAll('#fil details.lvfold').forEach(function(d){d.open=(view==='p3'||view==='done'||view==='hidden'||terms.length>0)});lastMode=mode}
+    document.querySelectorAll('#fil details.lvfold').forEach(function(d){d.open=(view==='p3'||view==='done'||view==='hidden'||terms.length>0)});
+    var full=(view==='p1'||view==='p2');  /* onglets P1/P2 : solutions visibles sans clic */
+    document.querySelectorAll('#fil .row details.more, #fil .row details.todo-in').forEach(function(d){d.open=full});lastMode=mode}
   ['all','p1','p2','p3','news','done','hidden'].forEach(function(v){
     var c=rows.filter(function(r){return inView(r,v)}).length;
     var b=document.querySelector('.f[data-v="'+v+'"]');if(b){b.querySelector('b').textContent=c;b.setAttribute('aria-pressed',v===view)}});
@@ -1237,6 +1257,24 @@ if(form){form.addEventListener('submit',function(ev){ev.preventDefault();var c=d
     document.getElementById('syncmsg').textContent='Synchronisation désactivée sur cet appareil. Vos choix restent enregistrés ici.'})}
 if(syncCode){pull();setInterval(pull,5*60*1000);document.addEventListener('visibilitychange',function(){if(!document.hidden)pull()})}
 
+/* Briefing : un clic sur une ligne déplie sa fiche (versions, correctif, impact, mesures, sources) */
+function toggleRow(tr){var d=tr.nextElementSibling;if(!d||!d.classList.contains('dt-row'))return;
+  d.hidden=!d.hidden;tr.setAttribute('aria-expanded',!d.hidden);tr.classList.toggle('is-open',!d.hidden);
+  var b=tr.querySelector('.dt-btn');if(b)b.textContent=d.hidden?'Détails':'Masquer'}
+document.addEventListener('click',function(ev){var tr=ev.target.closest('tr.has-detail');
+  if(!tr||(ev.target.closest('a')&&!ev.target.closest('.dt-btn')))return;toggleRow(tr)});
+document.addEventListener('keydown',function(ev){if((ev.key==='Enter'||ev.key===' ')&&ev.target.matches&&ev.target.matches('tr.has-detail')){ev.preventDefault();toggleRow(ev.target)}});
+
+/* Lien vers un article : on déplie ce qui le cache, puis on y va */
+function reveal(hash){var el=hash&&document.getElementById(hash.slice(1));if(!el||!el.classList.contains('row'))return;
+  if(el.hidden){view='all';terms=[];q.value='';paint()}
+  var p=el.parentElement;while(p){if(p.tagName==='DETAILS')p.open=true;p=p.parentElement}
+  var more=el.querySelector('details.more');if(more)more.open=true;
+  el.scrollIntoView({block:'start'});el.classList.add('flash');setTimeout(function(){el.classList.remove('flash')},1600)}
+document.addEventListener('click',function(ev){var a=ev.target.closest('a[href^="#it-"],a[href^="./#it-"]');if(!a)return;
+  ev.preventDefault();var h=a.getAttribute('href').replace('./','');try{history.replaceState(null,'',h)}catch(_){}reveal(h)});
+if(location.hash.indexOf('#it-')===0)setTimeout(function(){reveal(location.hash)},50);
+
 /* Cases « Que faire » */
 var day=document.body.dataset.day;
 function progress(g){var b=g.querySelectorAll('.steps input'),c=g.querySelectorAll('.steps input:checked').length,p=g.querySelector('.progress');
@@ -1278,7 +1316,8 @@ def sync_html() -> str:
 
 
 def nav_html(active: str = "") -> str:
-    links = [("./", "Bulletin", "home"), ("archives.html", "Archives", "archives"), ("a-propos.html", "À propos", "about")]
+    links = [("./", "Bulletin", "home"), ("etat.html", "État du parc", "state"), ("archives.html", "Archives", "archives"),
+             ("a-propos.html", "À propos", "about")]
     return '<nav class="nav" aria-label="Menu">' + "".join(
         f'<a href="{h}"{" aria-current=\"page\"" if k == active else ""}>{t}</a>' for h, t, k in links) + "</nav>"
 
@@ -1540,7 +1579,7 @@ def panorama_html(entries: list[dict], eol: list[dict], status_rows: list[dict])
         notes = []
         if items:
             top = max(items, key=lambda i: (i["level"], i["date"] or NOW))
-            notes.append(f'<a href="#{anchor(top)}">{e(top["title"][:110])}</a>')
+            notes.append(f'<a href="./#{anchor(top)}">{e(top["title"][:110])}</a>')
         for r in (r for r in eol if r["product"] in prods and r["delta"] <= 30):
             notes.append(f'{e(r["product"])} {e(r["cycle"])} : fin de maintenance {e(eol_when(r)[1])}')
         detail = " · ".join(notes) if notes else "Rien de nouveau"
@@ -1563,6 +1602,10 @@ def lv_of(n) -> int:
 MD_TAG = re.compile(r"\b(P[123])\b")
 
 
+CVE_DETAIL: dict = {}   # CVE -> fiche complète (versions, correctif, impact, mesures, sources) pour le briefing
+CVE_ANCHOR: dict = {}   # CVE -> ancre de l'alerte sur la page d'accueil (rempli au moment du rendu)
+
+
 def md_inline(t: str) -> str:
     """Mise en forme d'une ligne : texte échappé, puis gras, liens http(s) et étiquettes P1/P2/P3."""
     t = e(t)
@@ -1570,10 +1613,34 @@ def md_inline(t: str) -> str:
     t = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)",
                lambda m: f'<a href="{m.group(2)}" target="_blank" rel="noopener">{m.group(1)}</a>', t)
     t = re.sub(r"`([^`]+)`", r'<span class="cve">\1</span>', t)
+    if CVE_ANCHOR:
+        t = re.sub(r"(?<![\w/#=.-])(CVE-\d{4}-\d{4,})",
+                   lambda m: (f'<a class="cvelink" href="#{CVE_ANCHOR[m.group(1).upper()]}" title="Voir l\'article et les mesures">'
+                              f'{m.group(1)}</a>') if m.group(1).upper() in CVE_ANCHOR else m.group(1), t, flags=re.I)
     return MD_TAG.sub(lambda m: f'<span class="tag lv{lv_of(m.group(1))}">{m.group(1)}</span>', t)
 
 
-def md_to_html(md: str) -> str:
+def detail_html(it: dict, post) -> str:
+    """Fiche dépliable d'une alerte, affichée sous sa ligne dans le tableau du briefing."""
+    head = (f'<p class="dt-head"><span class="tag lv{it["level"]}">{LEVEL_TAG[it["level"]] or "Info"}</span>'
+            f'<a href="{e(it["link"])}" target="_blank" rel="noopener">{e((post or {}).get("title") or it["title"])}</a></p>')
+    if post and post.get("md"):
+        body = f'<div class="pbody">{md_to_html(post["md"])}</div>'
+    else:
+        body = f'<p>{e(it["summary"])}</p>' if it["summary"] else ""
+        if it["action"]:
+            body += f'<p><b>Action demandée par la CISA :</b> {e(it["action"])}</p>'
+        pb = PB_BY_ID.get(it["playbook"]) if it["playbook"] else None
+        body += ('<p class="dt-wait">L\'article détaillé n\'est pas encore rédigé ; voici les mesures types.</p>'
+                 if not post else "")
+        steps = pb["steps"] if pb else GENERIC_STEPS
+        body += "<h4>Mesures SysOps</h4><ol class=\"watch\">" + "".join(f"<li>{e(x)}</li>" for x in steps) + "</ol>"
+    srcs = " · ".join(sources_links(it))
+    return (f'{head}{body}<p class="dt-src"><b>Sources officielles :</b> {srcs}</p>'
+            f'<p class="dt-jump"><a href="#{anchor(it)}">Voir l\'alerte dans le fil (Valider, Pas concerné)</a></p>')
+
+
+def md_to_html(md: str, details: bool = False) -> str:
     out, para, lst, table = [], [], [], []
     kind = ["ul"]
 
@@ -1589,10 +1656,19 @@ def md_to_html(md: str) -> str:
                     if not re.fullmatch(r"\|?[\s:\-|]+\|?", r.strip())]
             if rows:
                 head, body = rows[0], rows[1:]
+                trs = []
+                for r in body:
+                    cells = "".join(f"<td>{md_inline(c)}</td>" for c in r)
+                    cve = next((c.upper() for c in CVE_RE.findall(" ".join(r)) if c.upper() in CVE_DETAIL), None) if details else None
+                    if cve:  # ligne du briefing : un clic déplie la fiche complète de l'alerte
+                        trs.append(f'<tr class="has-detail" tabindex="0" aria-expanded="false">{cells}'
+                                   f'<td class="dt-cell"><button type="button" class="dt-btn">Détails</button></td></tr>'
+                                   f'<tr class="dt-row" hidden><td colspan="{len(r) + 1}"><div class="dt">{CVE_DETAIL[cve]}</div></td></tr>')
+                    else:
+                        trs.append(f"<tr>{cells}{'<td></td>' if details and CVE_DETAIL else ''}</tr>")
+                extra_th = "<th></th>" if details and CVE_DETAIL else ""
                 out.append('<table class="prio"><thead><tr>' + "".join(f"<th>{md_inline(c)}</th>" for c in head)
-                           + "</tr></thead><tbody>" + "".join(
-                               "<tr>" + "".join(f"<td>{md_inline(c)}</td>" for c in r) + "</tr>" for r in body)
-                           + "</tbody></table>")
+                           + extra_th + "</tr></thead><tbody>" + "".join(trs) + "</tbody></table>")
             table.clear()
 
     for raw in md.splitlines():
@@ -1642,14 +1718,14 @@ def briefing_html(b) -> str:
                 cur = []
             cur.append(line)
         chunks.append("\n".join(cur))
-        body = md_to_html("\n".join(chunks[:2]))
+        body = md_to_html("\n".join(chunks[:2]), details=True)
         if len(chunks) > 2:
             body += ('<details class="more"><summary>Lire la suite du briefing</summary>'
-                     + md_to_html("\n".join(chunks[2:])) + "</details>")
+                     + md_to_html("\n".join(chunks[2:]), details=True) + "</details>")
         if b.get("truncated"):
             body += '<p class="bnote">Le briefing a été raccourci : consultez le fil ci-dessous pour le détail.</p>'
-        sub = (f"Rédigé par l'IA à {gen.strftime('%H:%M')} le {gen.strftime('%d/%m')} à partir des sources officielles "
-               "listées plus bas. Vérifiez toujours les détails dans l'avis officiel.")
+        sub = (f"Rédigé par l'IA à {gen.strftime('%H:%M')} le {gen.strftime('%d/%m')} à partir des sources officielles. "
+               "Cliquez sur une CVE pour ouvrir l'article et ses mesures.")
         return (f'<section id="briefing"><div class="sh"><h2>Briefing du jour</h2><p>{e(sub)}</p></div>'
                 f'<div class="bcard md">{body}</div></section>')
     if not b or not isinstance(b.get("data"), dict):
@@ -1726,9 +1802,19 @@ def day_label(d) -> tuple[str, str]:
 def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefing=None, posts=None) -> str:
     eol = eol or []
     posts = posts or {}
+    CVE_ANCHOR.clear()
     entries = merge_entries(kev + cert + redhat + vendors + ghsa + news)
     today = NOW.astimezone(PARIS).date()
     loc = NOW.astimezone(PARIS)
+
+    CVE_DETAIL.clear()
+    for it in sorted(entries, key=lambda i: -i["level"]):
+        fiche = None
+        for c in it["cves"]:
+            CVE_ANCHOR.setdefault(c.upper(), anchor(it))
+            if c.upper() not in CVE_DETAIL and it["level"] >= WATCH:
+                fiche = fiche or detail_html(it, posts.get(entry_id(it)))
+                CVE_DETAIL[c.upper()] = fiche
 
     # Fil : un bloc par jour, puis un bloc par niveau
     days: dict = {}
@@ -1801,8 +1887,8 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
         facts.append(f"<li>{e(kev_txt)}</li>")
     n_eol = sum(1 for r in eol if r["delta"] <= 30)
     if n_eol:
-        facts.append(f'<li><a href="#eol">{plural(n_eol, "fin de maintenance", "fins de maintenance")} à traiter</a></li>')
-    facts.append('<li><a href="#panorama">Panorama par domaine</a></li>')
+        facts.append(f'<li><a href="etat.html#eol">{plural(n_eol, "fin de maintenance", "fins de maintenance")} à traiter</a></li>')
+    facts.append('<li><a href="etat.html">État du parc</a></li>')
 
     filters = ('<button class="f" data-v="all" type="button"><i></i>Tout <b></b></button>'
                '<button class="f lv3" data-v="p1" type="button"><i></i>P1 <b></b></button>'
@@ -1845,15 +1931,11 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
 <span id="qcount" aria-live="polite"></span><span id="syncst" class="syncst"></span><button class="clear" id="clear" type="button">Vider la liste</button></div></div>
 <div id="fil">{"".join(fil)}</div>
 <p id="viewempty" class="empty viewempty" hidden></p>
-{section("Panorama par domaine", "Où en est chaque partie de l'infrastructure", panorama_html(entries, eol, status_rows), "panorama")}
-{section("Fins de maintenance", f"Versions arrivées en fin de vie ces {EOL_PAST_DAYS} derniers jours ou dans les {EOL_NEXT_DAYS} prochains", eol_html(eol), "eol")}
-{section("Disponibilité des services", f"Pages d'état officielles, dernières {STATUS_HOURS} h", status_html(status_rows), "services")}
-{section("Sources", "Cliquez sur une source pour ouvrir son site", sources_html(), "sources")}
 <footer>
 <p>Ce bulletin est assemblé automatiquement toutes les 15 minutes. Il ne vérifie pas les informations : le niveau de priorité est déduit des sources (catalogue CISA, alertes CERT-FR) et de mots-clés. Référez-vous toujours à l'avis officiel.</p>
 {sync_html()}
 <p>Les commandes proposées sont des exemples génériques. Testez-les avant de les appliquer en production.</p>
-<p><a href="a-propos.html">À propos et mentions légales</a> · <a href="alertes.xml">Flux RSS des alertes</a></p>
+<p><a href="etat.html">État du parc et sources</a> · <a href="a-propos.html">À propos et mentions légales</a> · <a href="alertes.xml">Flux RSS des alertes</a></p>
 </footer></main>
 <div id="toast" role="status" hidden><span></span><button type="button">Annuler</button></div>
 <script>{JS}</script>
@@ -2169,7 +2251,7 @@ def parse_post(text: str) -> dict:
     return {"prio": prio[:120], "title": title[:200], "md": md}
 
 
-def get_posts(entries: list[dict]) -> dict:
+def get_posts(entries: list[dict], briefing=None) -> dict:
     """Articles rédigés pour les alertes P1/P2 récentes. Chaque article n'est rédigé qu'une fois."""
     try:
         with open(POSTS_FILE, encoding="utf-8") as f:
@@ -2182,10 +2264,13 @@ def get_posts(entries: list[dict]) -> dict:
     today, month = NOW.strftime("%Y-%m-%d"), NOW.strftime("%Y-%m")
     n_day = calls.get(today, 0)
     n_month = sum(v for k, v in calls.items() if k.startswith(month))
-    todo = [i for i in entries if i["level"] >= CRITICAL and i["date"]
-            and NOW - i["date"] <= timedelta(days=AI_POSTS_DAYS)
+    cited = {c.upper() for c in CVE_RE.findall((briefing or {}).get("md", "") or "")}
+    is_cited = lambda i: bool(cited & set(i["cves"]))
+    todo = [i for i in entries if i["date"]
+            and ((i["level"] >= CRITICAL and NOW - i["date"] <= timedelta(days=AI_POSTS_DAYS))
+                 or (i["level"] >= WATCH and is_cited(i)))
             and (entry_id(i) not in posts or posts[entry_id(i)].get("level", 0) < i["level"])]
-    todo.sort(key=lambda i: (-i["level"], -i["date"].timestamp()))
+    todo.sort(key=lambda i: (not is_cited(i), -i["level"], -i["date"].timestamp()))
     written = failed = 0
     for it in todo:
         if written + failed >= AI_POSTS_PER_RUN or n_day >= AI_POSTS_PER_DAY or n_month >= AI_POSTS_PER_MONTH:
@@ -2465,6 +2550,22 @@ ARCH_CSS = """
 """
 
 
+def state_page(entries: list[dict], eol: list[dict], status_rows: list[dict]) -> str:
+    loc = NOW.astimezone(PARIS)
+    body = (f"<h1>État du parc</h1><p>Vue d'ensemble mise à jour le {e(date_fr(loc))} à {loc.strftime('%H:%M')} : "
+            "domaines concernés, fins de maintenance, disponibilité des grands services et état des sources.</p>"
+            + section("Panorama par domaine", "Où en est chaque partie de l'infrastructure",
+                      panorama_html(entries, eol, status_rows), "panorama")
+            + section("Fins de maintenance", f"Versions arrivées en fin de vie ces {EOL_PAST_DAYS} derniers jours "
+                      f"ou dans les {EOL_NEXT_DAYS} prochains", eol_html(eol), "eol")
+            + section("Disponibilité des services", f"Pages d'état officielles, dernières {STATUS_HOURS} h",
+                      status_html(status_rows), "services")
+            + section("Sources", "Cliquez sur une source pour ouvrir son site", sources_html(), "sources"))
+    return simple_page("État du parc", body, "etat.html",
+                       f"Panorama, fins de maintenance et disponibilité des services suivis par {SITE_NAME}.",
+                       active="state", extra_css=".doc{max-width:980px}.doc ul.pano,.doc ul.services{padding:0}")
+
+
 def archive_pages(days: dict) -> dict:
     """Pages HTML : archives.html (liste des jours) et archive-AAAA-MM-JJ.html (un bulletin par jour)."""
     pages, keys = {}, sorted(days, reverse=True)
@@ -2606,7 +2707,7 @@ def main(out_dir: str = "_site") -> None:
     news = collect_news() if INCLUDE_PRESS else []
     merged = merge_entries(kev + cert + redhat + vendors + ghsa + news)
     briefing = get_briefing(merged, eol, status_rows)
-    posts = get_posts(merged)
+    posts = get_posts(merged, briefing)
 
     os.makedirs(out_dir, exist_ok=True)
     with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as f:
@@ -2614,8 +2715,12 @@ def main(out_dir: str = "_site") -> None:
     urgent = [i for i in kev + cert + redhat + vendors + ghsa if i["level"] >= CRITICAL]
     with open(os.path.join(out_dir, "alertes.xml"), "w", encoding="utf-8") as f:
         f.write(render_rss(urgent))
+    with open(os.path.join(out_dir, "etat.html"), "w", encoding="utf-8") as f:
+        f.write(state_page(merged, eol, status_rows))
+    CVE_ANCHOR.clear()  # les liens vers les articles ne valent que pour la page d'accueil
+    CVE_DETAIL.clear()
     days = update_archives(merged, posts, briefing)
-    write_extras(out_dir, write_archives(out_dir, days))
+    write_extras(out_dir, ["etat.html"] + write_archives(out_dir, days))
     if SITE_DOMAIN:
         with open(os.path.join(out_dir, "CNAME"), "w") as f:
             f.write(SITE_DOMAIN)
