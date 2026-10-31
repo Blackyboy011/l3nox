@@ -1992,6 +1992,9 @@ def _ledger() -> dict:
         except (OSError, ValueError):
             _LEDGER = {}
         _LEDGER.setdefault("days", {})
+        # jour où le compteur a démarré : les jours précédents du mois sont comptés comme déjà dépensés
+        # (au rythme normal), pour ne jamais « rattraper » d'un coup un budget peut-être déjà utilisé.
+        _LEDGER.setdefault("since", NOW.astimezone(PARIS).strftime("%Y-%m-%d"))
     return _LEDGER
 
 
@@ -2018,11 +2021,16 @@ def credits_status() -> dict:
     """Crédits dépensés ce mois-ci, budget du jour et reste disponible aujourd'hui."""
     start, end = cycle_bounds()
     today = NOW.astimezone(PARIS).date()
-    days = _ledger()["days"]
+    led = _ledger()
+    days = led["days"]
     before = sum(v for k, v in days.items() if start.isoformat() <= k < today.isoformat())
-    spent_today = days.get(today.isoformat(), 0.0)
+    since = max(start, min(today, datetime.strptime(led["since"], "%Y-%m-%d").date()))
+    before += AI_CREDIT_BUDGET * (since - start).days / (end - start).days   # jours d'avant le compteur
     days_left = max(1, (end - today).days)
-    allowance = max(0.0, AI_CREDIT_BUDGET - before) / days_left
+    # garde-fou : jamais plus de 3 fois le rythme normal sur une journée
+    cap = 3 * AI_CREDIT_BUDGET / (end - start).days
+    spent_today = days.get(today.isoformat(), 0.0)
+    allowance = min(cap, max(0.0, AI_CREDIT_BUDGET - before) / days_left)
     return {"month": before + spent_today, "today": spent_today, "allowance": allowance,
             "left_today": allowance - spent_today, "left_month": AI_CREDIT_BUDGET - before - spent_today,
             "days_left": days_left}
