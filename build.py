@@ -23,6 +23,7 @@ import html
 import json
 import os
 import re
+import time
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -117,17 +118,26 @@ AI_URL = os.environ.get("L3NOX_AI_URL", "")
 AI_SECRET = os.environ.get("L3NOX_AI_SECRET", "")
 AI_KEY = os.environ.get("ANTHROPIC_API_KEY", "")   # optionnel : clé API Anthropic directe (payante)
 AI_MODEL = os.environ.get("AI_MODEL") or "claude-haiku-5-5"   # le plus économe en crédits
-# L'IA ne travaille qu'UNE FOIS PAR JOUR, le matin (heure de Paris), pour que les 300 crédits
-# gratuits de Netlify tiennent tout le mois. Le reste de la journée, les nouvelles alertes
-# continuent d'apparaître sur le site ; seuls la synthèse et les articles attendent le lendemain matin.
-AI_WINDOW = (6, 10)     # créneau de travail de l'IA : de 6 h à 10 h (heure de Paris)
-AI_MAX_PER_DAY = 2      # 1 synthèse par jour (+ 1 seul nouvel essai si la première tentative échoue)
-AI_MAX_PER_MONTH = 45
+# ── Budget de crédits Netlify ──
+# L'IA dépense chaque mois un budget de crédits fixé ci-dessous, réparti jour par jour :
+# budget du jour = (budget restant du mois) ÷ (jours restants). Ce qui n'est pas dépensé un jour
+# est reporté sur les jours suivants. Coût calculé avec le barème officiel de Netlify :
+# 180 crédits par dollar de tokens + 10 crédits par Go-heure de calcul de la fonction.
+# Le compte gratuit a 300 crédits ; on en garde quelques-uns de côté pour le reste (requêtes, éventuel déploiement),
+# car à 300 Netlify met le service IA et la synchronisation en pause jusqu'au mois suivant.
+AI_CREDIT_BUDGET = float(os.environ.get("L3NOX_CREDIT_BUDGET") or 285)
+AI_CYCLE_DAY = int(os.environ.get("L3NOX_CYCLE_DAY") or 1)   # jour où Netlify remet les crédits à zéro (1 à 28)
+AI_RATES = {"claude-haiku-5-5": (0.10, 0.50), "claude-haiku-4-5": (1.00, 5.00)}  # $ par million de tokens (entrée, sortie)
+AI_FN_GB = 1.0          # mémoire de la fonction Netlify (1 Go par défaut)
+AI_WINDOW = (6, 10)     # la synthèse principale est rédigée le matin, entre 6 h et 10 h (heure de Paris)
+AI_REFRESH_HOURS = 4    # mise à jour de la synthèse dans la journée si une nouvelle P1/P2 apparaît (budget permettant)
+AI_MAX_PER_DAY = 6      # garde-fous absolus, quoi qu'il arrive
+AI_MAX_PER_MONTH = 150
 AI_MAX_ITEMS = 60
 # Articles rédigés (un par alerte P1/P2, rédigé une seule fois puis conservé)
-AI_POSTS_PER_RUN = 6     # répartis sur les passages du créneau du matin
-AI_POSTS_PER_DAY = 15
-AI_POSTS_PER_MONTH = 400
+AI_POSTS_PER_RUN = 12
+AI_POSTS_PER_DAY = 120   # garde-fous absolus ; en pratique c'est le budget de crédits qui décide
+AI_POSTS_PER_MONTH = 2500
 AI_POSTS_DAYS = 14      # on ne rédige que pour les alertes de moins de N jours (sauf si le briefing les cite)
 
 # Presse spécialisée : désactivée (seules les sources officielles alimentent le bulletin).
@@ -1969,6 +1979,86 @@ def render_rss(urgent: list[dict]) -> str:
 
 # ═════════════════════ Synthèse rédigée par l'IA ═════════════════════
 BRIEF_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "briefing.json")
+CREDITS_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "credits.json")
+_LEDGER = None
+
+
+def _ledger() -> dict:
+    global _LEDGER
+    if _LEDGER is None:
+        try:
+            with open(CREDITS_FILE, encoding="utf-8") as f:
+                _LEDGER = json.load(f)
+        except (OSError, ValueError):
+            _LEDGER = {}
+        _LEDGER.setdefault("days", {})
+    return _LEDGER
+
+
+def _save_ledger() -> None:
+    led = _ledger()
+    keep = (NOW - timedelta(days=70)).astimezone(PARIS).strftime("%Y-%m-%d")
+    led["days"] = {k: v for k, v in led["days"].items() if k >= keep}
+    os.makedirs(os.path.dirname(CREDITS_FILE) or ".", exist_ok=True)
+    with open(CREDITS_FILE, "w", encoding="utf-8") as f:
+        json.dump(led, f, ensure_ascii=False)
+
+
+def cycle_bounds():
+    """Début (inclus) et fin (exclue) du mois de facturation Netlify, en dates de Paris."""
+    d = NOW.astimezone(PARIS).date()
+    day = min(max(AI_CYCLE_DAY, 1), 28)
+    y, m = (d.year, d.month) if d.day >= day else ((d.year, d.month - 1) if d.month > 1 else (d.year - 1, 12))
+    start = d.replace(year=y, month=m, day=day)
+    end = start.replace(year=y + (m == 12), month=m % 12 + 1)
+    return start, end
+
+
+def credits_status() -> dict:
+    """Crédits dépensés ce mois-ci, budget du jour et reste disponible aujourd'hui."""
+    start, end = cycle_bounds()
+    today = NOW.astimezone(PARIS).date()
+    days = _ledger()["days"]
+    before = sum(v for k, v in days.items() if start.isoformat() <= k < today.isoformat())
+    spent_today = days.get(today.isoformat(), 0.0)
+    days_left = max(1, (end - today).days)
+    allowance = max(0.0, AI_CREDIT_BUDGET - before) / days_left
+    return {"month": before + spent_today, "today": spent_today, "allowance": allowance,
+            "left_today": allowance - spent_today, "left_month": AI_CREDIT_BUDGET - before - spent_today,
+            "days_left": days_left}
+
+
+def note_credits(usage: dict, seconds: float, prompt_chars: int = 0, text_chars: int = 0, ok: bool = True) -> float:
+    """Enregistre le coût (en crédits Netlify) d'un appel à l'IA."""
+    r_in, r_out = AI_RATES.get(AI_MODEL, (1.00, 5.00))
+    tin = (usage or {}).get("input_tokens") or (prompt_chars / 3 if ok else 0)
+    tout = (usage or {}).get("output_tokens") or (text_chars / 3 if ok else 0)
+    tin += (usage or {}).get("cache_read_input_tokens", 0) * 0.1 + (usage or {}).get("cache_creation_input_tokens", 0) * 1.25
+    cost = (tin * r_in + tout * r_out) / 1e6 * 180 + seconds / 3600 * AI_FN_GB * 10 + 0.0002
+    key = NOW.astimezone(PARIS).strftime("%Y-%m-%d")
+    days = _ledger()["days"]
+    days[key] = round(days.get(key, 0.0) + cost, 4)
+    _save_ledger()
+    return cost
+
+
+def _ai_request(system: str, prompt: str, max_tokens: int) -> dict:
+    """Appel à la fonction Netlify ; le coût est noté même en cas d'échec (temps de calcul)."""
+    t0, resp, ok = time.monotonic(), {}, False
+    try:
+        req = urllib.request.Request(AI_URL.strip(), data=json.dumps({"system": system, "prompt": prompt,
+                                                                       "model": AI_MODEL, "max_tokens": max_tokens}).encode(),
+                                     headers={"content-type": "application/json", "x-l3nox-secret": AI_SECRET,
+                                              "User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=90) as r:
+            resp = json.loads(r.read())
+        if resp.get("error"):
+            raise RuntimeError(f"service IA : {resp['error']}")
+        ok = True
+        return resp
+    finally:
+        note_credits(resp.get("usage") if isinstance(resp, dict) else None, time.monotonic() - t0,
+                     len(system) + len(prompt), len((resp or {}).get("text", "") if isinstance(resp, dict) else ""), ok)
 
 AI_SYSTEM = """Tu es l'analyste SysOps qui rédige chaque matin le briefing de veille d'un administrateur
 systèmes et réseaux français (parc Linux Red Hat, Windows / Active Directory, Samba, virtualisation,
@@ -2054,14 +2144,7 @@ def ai_call(prompt: str) -> dict:
             "messages": [{"role": "user", "content": prompt}]}
     out_tokens = None
     if AI_URL:  # fonction Netlify (AI Gateway)
-        req = urllib.request.Request(AI_URL.strip(), data=json.dumps({"system": AI_SYSTEM, "prompt": prompt,
-                                                                       "model": AI_MODEL, "max_tokens": max_tokens}).encode(),
-                                     headers={"content-type": "application/json", "x-l3nox-secret": AI_SECRET,
-                                              "User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=90) as r:
-            resp = json.loads(r.read())
-        if resp.get("error"):
-            raise RuntimeError(f"service IA : {resp['error']}")
+        resp = _ai_request(AI_SYSTEM, prompt, max_tokens)
         text = resp.get("text", "")
         u = resp.get("usage") or {}
         out_tokens = u.get("output_tokens")
@@ -2112,10 +2195,22 @@ def get_briefing(entries: list[dict], eol: list[dict], status_rows: list[dict]):
         gen = datetime.fromisoformat(cached["generated"])
         age_h = (NOW - gen).total_seconds() / 3600
         same_day = gen.astimezone(PARIS).date() == NOW.astimezone(PARIS).date()
-        if same_day or cached.get("sig") == sig or not in_ai_window():
-            why = ("déjà rédigée aujourd'hui" if same_day else "rien de nouveau" if cached.get("sig") == sig
-                   else f"prochaine rédaction au créneau du matin, entre {AI_WINDOW[0]} h et {AI_WINDOW[1]} h")
+        urgent = {entry_id(i) for i in entries if i["level"] >= CRITICAL}
+        new_urgent = bool(urgent - set(cached.get("urgent", cached.get("p1", []))))
+        cs = credits_status()
+        if same_day:   # déjà une synthèse aujourd'hui : mise à jour seulement si du nouveau important et du budget
+            fresh = (cached.get("sig") != sig and new_urgent and age_h >= AI_REFRESH_HOURS and cs["left_today"] >= 1.0)
+            why = ("rien de nouveau" if cached.get("sig") == sig else "pas de nouvelle P1/P2" if not new_urgent
+                   else f"dernière mise à jour il y a moins de {AI_REFRESH_HOURS} h" if age_h < AI_REFRESH_HOURS
+                   else "budget du jour réservé aux articles")
+        else:          # première synthèse du jour : le matin (ou dès que possible si on a manqué le créneau)
+            fresh = cached.get("sig") != sig and (in_ai_window() or NOW.astimezone(PARIS).hour >= AI_WINDOW[1])
+            why = "rien de nouveau" if cached.get("sig") == sig else f"rédaction à partir de {AI_WINDOW[0]} h"
+        if not fresh:
             print(f"[ok] Synthèse IA : réutilisée (rédigée il y a {age_h:.1f} h, {why}).")
+            return cached
+        if cs["left_month"] <= 0.5:
+            print("[--] Synthèse IA : budget de crédits du mois épuisé, précédente réutilisée.")
             return cached
     if n_day >= AI_MAX_PER_DAY or n_month >= AI_MAX_PER_MONTH:
         print(f"[--] Synthèse IA : plafond atteint ({n_day} aujourd'hui, {n_month} ce mois-ci), précédente réutilisée.")
@@ -2132,7 +2227,8 @@ def get_briefing(entries: list[dict], eol: list[dict], status_rows: list[dict]):
         return cached
     counts[today] = n_day + 1
     counts = {k: v for k, v in counts.items() if k >= (NOW - timedelta(days=62)).strftime("%Y-%m-%d")}
-    out = {"sig": sig, "p1": sorted(p1), "generated": NOW.isoformat(), "model": AI_MODEL, **data,
+    out = {"sig": sig, "p1": sorted(p1), "urgent": sorted({entry_id(i) for i in entries if i["level"] >= CRITICAL}),
+           "generated": NOW.isoformat(), "model": AI_MODEL, **data,
            "calls": counts}
     os.makedirs(os.path.dirname(BRIEF_FILE) or ".", exist_ok=True)
     with open(BRIEF_FILE, "w", encoding="utf-8") as f:
@@ -2198,15 +2294,7 @@ def page_text(url: str, limit: int = 9000) -> str:
 def ai_text(system: str, prompt: str, max_tokens: int) -> str:
     """Appelle l'IA (fonction Netlify, ou clé API directe) et renvoie le texte produit."""
     if AI_URL:
-        req = urllib.request.Request(AI_URL.strip(), data=json.dumps({"system": system, "prompt": prompt,
-                                                                       "model": AI_MODEL, "max_tokens": max_tokens}).encode(),
-                                     headers={"content-type": "application/json", "x-l3nox-secret": AI_SECRET,
-                                              "User-Agent": UA})
-        with urllib.request.urlopen(req, timeout=90) as r:
-            resp = json.loads(r.read())
-        if resp.get("error"):
-            raise RuntimeError(f"service IA : {resp['error']}")
-        text = resp.get("text", "")
+        text = _ai_request(system, prompt, max_tokens).get("text", "")
     else:
         body = {"model": AI_MODEL, "max_tokens": max_tokens, "system": system,
                 "messages": [{"role": "user", "content": prompt}]}
@@ -2272,23 +2360,26 @@ def get_posts(entries: list[dict], briefing=None) -> dict:
     posts, calls = store.get("posts", {}), store.get("calls", {})
     if not ((AI_URL and AI_SECRET) or AI_KEY):
         return posts
-    if not in_ai_window():
-        print(f"[--] Articles IA : hors créneau, rédaction au prochain créneau, entre {AI_WINDOW[0]} h et {AI_WINDOW[1]} h "
-              f"(heure de Paris) ; {len(posts)} article(s) en mémoire.")
-        return posts
     today, month = NOW.strftime("%Y-%m-%d"), NOW.strftime("%Y-%m")
     n_day = calls.get(today, 0)
     n_month = sum(v for k, v in calls.items() if k.startswith(month))
     cited = {c.upper() for c in CVE_RE.findall((briefing or {}).get("md", "") or "")}
     is_cited = lambda i: bool(cited & set(i["cves"]))
     todo = [i for i in entries if i["date"]
-            and ((i["level"] >= CRITICAL and NOW - i["date"] <= timedelta(days=AI_POSTS_DAYS))
+            and ((i["level"] >= WATCH and NOW - i["date"] <= timedelta(days=AI_POSTS_DAYS))
                  or (i["level"] >= WATCH and is_cited(i)))
             and (entry_id(i) not in posts or posts[entry_id(i)].get("level", 0) < i["level"])]
     todo.sort(key=lambda i: (not is_cited(i), -i["level"], -i["date"].timestamp()))
+    # tant que la synthèse du jour n'est pas rédigée, on lui garde sa part du budget
+    gen = (briefing or {}).get("generated")
+    reserve = 0.0 if gen and datetime.fromisoformat(gen).astimezone(PARIS).date() == NOW.astimezone(PARIS).date() else 0.8
     written = failed = 0
     for it in todo:
         if written + failed >= AI_POSTS_PER_RUN or n_day >= AI_POSTS_PER_DAY or n_month >= AI_POSTS_PER_MONTH:
+            break
+        cs = credits_status()
+        if cs["left_today"] - reserve < 0.3 or cs["left_month"] - reserve < 0.3:
+            print(f"[--] Articles IA : budget du jour atteint ({cs['today']:.2f} / {cs['allowance']:.2f} crédits).")
             break
         n_day += 1
         n_month += 1
@@ -2310,7 +2401,10 @@ def get_posts(entries: list[dict], briefing=None) -> dict:
         json.dump({"posts": posts, "calls": calls}, f, ensure_ascii=False)
     left = max(0, len(todo) - written)
     print(f"[ok] Articles IA : {written} rédigé(s), {failed} échec(s), {len(posts)} en mémoire"
-          + (f", {left} en attente (rédigés aux prochains passages du créneau du matin)" if left else "") + ".")
+          + (f", {left} en attente (rédigés aux prochains passages)" if left else "") + ".")
+    cs = credits_status()
+    print(f"[ok] Crédits Netlify (estimation) : {cs['today']:.2f} aujourd'hui sur {cs['allowance']:.2f} prévus, "
+          f"{cs['month']:.1f} / {AI_CREDIT_BUDGET:.0f} ce mois-ci, {cs['days_left']} jour(s) restant(s).")
     return posts
 
 
@@ -2400,8 +2494,8 @@ services en ligne et les fins de maintenance des logiciels courants, puis propos
 <li>Le niveau de priorité est calculé automatiquement : <b>P1</b> quand l'exploitation est confirmée (catalogue de la
 CISA, alerte du CERT-FR, éditeur), <b>P2</b> pour les failles critiques, <b>P3</b> pour les avis à surveiller.</li>
 <li>Le briefing du jour et les articles détaillés sont rédigés automatiquement par une intelligence artificielle à
-partir du texte des avis officiels, une fois par jour, le matin. Les alertes publiées dans la journée apparaissent
-aussitôt dans la liste ; leur article détaillé arrive le lendemain matin. Ils peuvent contenir des erreurs : vérifiez toujours l'avis officiel avant d'agir.</li>
+partir du texte des avis officiels : la synthèse chaque matin (mise à jour dans la journée si une alerte importante
+arrive), les articles au fil de l'eau, dans la limite d'un budget mensuel fixe. Ils peuvent contenir des erreurs : vérifiez toujours l'avis officiel avant d'agir.</li>
 <li>Les commandes proposées sont des exemples génériques, à tester avant toute application en production.</li>
 </ul>
 
