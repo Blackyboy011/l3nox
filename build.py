@@ -542,7 +542,13 @@ def parse_feed(data: bytes) -> list[dict]:
     return out
 
 
+def safe_url(u) -> str:
+    u = str(u or "").strip()
+    return u if re.match(r"^https?://[^\s\"'<>]+$", u, re.I) else ""
+
+
 def make_item(source, title, link, date, summary="", level=INFO, **extra) -> dict:
+    link = safe_url(link)
     text = f"{title} {summary}"
     pb = next((p["id"] for p in PLAYBOOKS if p["re"].search(text)), None)
     cves = list(dict.fromkeys(c.upper() for c in CVE_RE.findall(text)))
@@ -719,7 +725,7 @@ def collect_status() -> list[dict]:
             rows.append({"name": name, "ok": None, "incidents": []})
             continue
         recent = [e for e in entries if e["date"] and e["date"] >= cutoff and e["title"]]
-        incidents = [{"title": e["title"], "link": e["link"] or STATUS_PAGES.get(name, ""), "date": e["date"],
+        incidents = [{"title": e["title"], "link": safe_url(e["link"]) or STATUS_PAGES.get(name, ""), "date": e["date"],
                       "resolved": bool(RESOLVED_RE.search(e["summary"] + " " + e["title"]))} for e in recent[:5]]
         STATUS.append((f"État {name}", True, f"{len(incidents)} incident(s) 24 h"))
         rows.append({"name": name, "ok": True, "incidents": incidents})
@@ -2230,7 +2236,15 @@ def base_url() -> str:
 def head_extra(title: str, desc: str, path: str = "") -> str:
     """Balises pour Google, les aperçus de partage, l'icône et les statistiques."""
     url = base_url() + path
-    tags = [f'<link rel="icon" href="favicon.svg" type="image/svg+xml">',
+    sync_origin = re.match(r"^https://[^/]+", SYNC_URL).group(0) if re.match(r"^https://[^/]+", SYNC_URL) else ""
+    csp = ("default-src 'self'; script-src 'self' 'unsafe-inline' https://gc.zgo.at; "
+           "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; "
+           "img-src 'self' data: https:; "
+           f"connect-src 'self' https://*.goatcounter.com {sync_origin}".rstrip() + "; "
+           "object-src 'none'; base-uri 'self'; form-action 'self'")
+    tags = [f'<meta http-equiv="Content-Security-Policy" content="{csp}">',
+            '<meta name="referrer" content="strict-origin-when-cross-origin">',
+            f'<link rel="icon" href="favicon.svg" type="image/svg+xml">',
             f'<meta property="og:type" content="website">',
             f'<meta property="og:site_name" content="{SITE_NAME}">',
             f'<meta property="og:title" content="{e(title)}">',
@@ -2351,11 +2365,11 @@ def arch_item(it: dict, post) -> dict:
 
 
 def from_arch(d: dict) -> tuple[dict, dict | None]:
-    it = {"source": d.get("source", ""), "title": d.get("title", ""), "link": d.get("link", ""),
+    it = {"source": d.get("source", ""), "title": d.get("title", ""), "link": safe_url(d.get("link", "")),
           "date": parse_date(d.get("date", "")), "summary": d.get("summary", ""), "level": int(d.get("level", 1)),
           "playbook": d.get("playbook") if d.get("playbook") in PB_BY_ID else None, "cves": d.get("cves", []),
           "action": "", "due": "", "ransomware": bool(d.get("rw")),
-          "also": [{"source": a[0], "link": a[1], "title": ""} for a in d.get("also", []) if len(a) == 2]}
+          "also": [{"source": a[0], "link": safe_url(a[1]), "title": ""} for a in d.get("also", []) if len(a) == 2]}
     return it, d.get("post")
 
 
