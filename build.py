@@ -117,14 +117,17 @@ AI_URL = os.environ.get("L3NOX_AI_URL", "")
 AI_SECRET = os.environ.get("L3NOX_AI_SECRET", "")
 AI_KEY = os.environ.get("ANTHROPIC_API_KEY", "")   # optionnel : clé API Anthropic directe (payante)
 AI_MODEL = os.environ.get("AI_MODEL") or "claude-haiku-5-5"   # le plus économe en crédits
-AI_MIN_HOURS = 6        # pas de nouvelle rédaction avant N heures… sauf si une nouvelle P1 apparaît
-AI_MAX_PER_DAY = 4      # garde-fous pour ne jamais épuiser les 300 crédits Netlify du mois
-AI_MAX_PER_MONTH = 100
+# L'IA ne travaille qu'UNE FOIS PAR JOUR, le matin (heure de Paris), pour que les 300 crédits
+# gratuits de Netlify tiennent tout le mois. Le reste de la journée, les nouvelles alertes
+# continuent d'apparaître sur le site ; seuls la synthèse et les articles attendent le lendemain matin.
+AI_WINDOW = (6, 10)     # créneau de travail de l'IA : de 6 h à 10 h (heure de Paris)
+AI_MAX_PER_DAY = 2      # 1 synthèse par jour (+ 1 seul nouvel essai si la première tentative échoue)
+AI_MAX_PER_MONTH = 45
 AI_MAX_ITEMS = 60
 # Articles rédigés (un par alerte P1/P2, rédigé une seule fois puis conservé)
-AI_POSTS_PER_RUN = 10
-AI_POSTS_PER_DAY = 40
-AI_POSTS_PER_MONTH = 600
+AI_POSTS_PER_RUN = 6     # répartis sur les passages du créneau du matin
+AI_POSTS_PER_DAY = 15
+AI_POSTS_PER_MONTH = 400
 AI_POSTS_DAYS = 14      # on ne rédige que pour les alertes de moins de N jours (sauf si le briefing les cite)
 
 # Presse spécialisée : désactivée (seules les sources officielles alimentent le bulletin).
@@ -466,6 +469,11 @@ GENERIC_STEPS = [
 
 # ═════════════════════════ Outils ═════════════════════════
 NOW = datetime.now(timezone.utc)
+
+
+def in_ai_window() -> bool:
+    """Vrai pendant le créneau quotidien de l'IA (AI_WINDOW, heure de Paris)."""
+    return AI_WINDOW[0] <= NOW.astimezone(PARIS).hour < AI_WINDOW[1]
 STATUS: list[tuple[str, bool, str]] = []  # (source, ok, détail) pour le pied de page
 
 
@@ -2101,10 +2109,13 @@ def get_briefing(entries: list[dict], eol: list[dict], status_rows: list[dict]):
     sig = hashlib.sha256("|".join(sig_items).encode()).hexdigest()
     p1 = {entry_id(i) for i in entries if i["level"] == EXPLOITED}
     if cached and cached.get("generated"):
-        age_h = (NOW - datetime.fromisoformat(cached["generated"])).total_seconds() / 3600
-        new_p1 = bool(p1 - set(cached.get("p1", [])))
-        if cached.get("sig") == sig or (age_h < AI_MIN_HOURS and not new_p1):
-            print(f"[ok] Synthèse IA : réutilisée (rédigée il y a {age_h:.1f} h).")
+        gen = datetime.fromisoformat(cached["generated"])
+        age_h = (NOW - gen).total_seconds() / 3600
+        same_day = gen.astimezone(PARIS).date() == NOW.astimezone(PARIS).date()
+        if same_day or cached.get("sig") == sig or not in_ai_window():
+            why = ("déjà rédigée aujourd'hui" if same_day else "rien de nouveau" if cached.get("sig") == sig
+                   else f"prochaine rédaction au créneau du matin, entre {AI_WINDOW[0]} h et {AI_WINDOW[1]} h")
+            print(f"[ok] Synthèse IA : réutilisée (rédigée il y a {age_h:.1f} h, {why}).")
             return cached
     if n_day >= AI_MAX_PER_DAY or n_month >= AI_MAX_PER_MONTH:
         print(f"[--] Synthèse IA : plafond atteint ({n_day} aujourd'hui, {n_month} ce mois-ci), précédente réutilisée.")
@@ -2261,6 +2272,10 @@ def get_posts(entries: list[dict], briefing=None) -> dict:
     posts, calls = store.get("posts", {}), store.get("calls", {})
     if not ((AI_URL and AI_SECRET) or AI_KEY):
         return posts
+    if not in_ai_window():
+        print(f"[--] Articles IA : hors créneau, rédaction au prochain créneau, entre {AI_WINDOW[0]} h et {AI_WINDOW[1]} h "
+              f"(heure de Paris) ; {len(posts)} article(s) en mémoire.")
+        return posts
     today, month = NOW.strftime("%Y-%m-%d"), NOW.strftime("%Y-%m")
     n_day = calls.get(today, 0)
     n_month = sum(v for k, v in calls.items() if k.startswith(month))
@@ -2295,7 +2310,7 @@ def get_posts(entries: list[dict], briefing=None) -> dict:
         json.dump({"posts": posts, "calls": calls}, f, ensure_ascii=False)
     left = max(0, len(todo) - written)
     print(f"[ok] Articles IA : {written} rédigé(s), {failed} échec(s), {len(posts)} en mémoire"
-          + (f", {left} en attente (rédigés aux prochains passages)" if left else "") + ".")
+          + (f", {left} en attente (rédigés aux prochains passages du créneau du matin)" if left else "") + ".")
     return posts
 
 
@@ -2385,7 +2400,8 @@ services en ligne et les fins de maintenance des logiciels courants, puis propos
 <li>Le niveau de priorité est calculé automatiquement : <b>P1</b> quand l'exploitation est confirmée (catalogue de la
 CISA, alerte du CERT-FR, éditeur), <b>P2</b> pour les failles critiques, <b>P3</b> pour les avis à surveiller.</li>
 <li>Le briefing du jour et les articles détaillés sont rédigés automatiquement par une intelligence artificielle à
-partir du texte des avis officiels. Ils peuvent contenir des erreurs : vérifiez toujours l'avis officiel avant d'agir.</li>
+partir du texte des avis officiels, une fois par jour, le matin. Les alertes publiées dans la journée apparaissent
+aussitôt dans la liste ; leur article détaillé arrive le lendemain matin. Ils peuvent contenir des erreurs : vérifiez toujours l'avis officiel avant d'agir.</li>
 <li>Les commandes proposées sont des exemples génériques, à tester avant toute application en production.</li>
 </ul>
 
