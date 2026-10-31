@@ -126,7 +126,8 @@ AI_MODEL = os.environ.get("AI_MODEL") or "claude-haiku-5-5"   # le plus économe
 # Le compte gratuit a 300 crédits ; on en garde quelques-uns de côté pour le reste (requêtes, éventuel déploiement),
 # car à 300 Netlify met le service IA et la synchronisation en pause jusqu'au mois suivant.
 AI_CREDIT_BUDGET = float(os.environ.get("L3NOX_CREDIT_BUDGET") or 285)
-AI_CYCLE_DAY = int(os.environ.get("L3NOX_CYCLE_DAY") or 1)   # jour où Netlify remet les crédits à zéro (1 à 28)
+AI_CYCLE_DAY = int(os.environ.get("L3NOX_CYCLE_DAY") or 29)  # jour où Netlify remet les crédits à zéro (période du 29 au 28)
+AI_PRIOR = ("2026-10-29", 63.0)   # crédits déjà utilisés sur la période commencée ce jour-là, avant le compteur du site
 AI_RATES = {"claude-haiku-5-5": (0.10, 0.50), "claude-haiku-4-5": (1.00, 5.00)}  # $ par million de tokens (entrée, sortie)
 AI_FN_GB = 1.0          # mémoire de la fonction Netlify (1 Go par défaut)
 AI_WINDOW = (6, 10)     # la synthèse principale est rédigée le matin, entre 6 h et 10 h (heure de Paris)
@@ -2009,12 +2010,16 @@ def _save_ledger() -> None:
 
 def cycle_bounds():
     """Début (inclus) et fin (exclue) du mois de facturation Netlify, en dates de Paris."""
+    import calendar
     d = NOW.astimezone(PARIS).date()
-    day = min(max(AI_CYCLE_DAY, 1), 28)
-    y, m = (d.year, d.month) if d.day >= day else ((d.year, d.month - 1) if d.month > 1 else (d.year - 1, 12))
-    start = d.replace(year=y, month=m, day=day)
-    end = start.replace(year=y + (m == 12), month=m % 12 + 1)
-    return start, end
+
+    def start_of(y, m):   # le 29 (ou le dernier jour du mois s'il est plus court, ex. février)
+        return d.replace(year=y, month=m, day=min(max(AI_CYCLE_DAY, 1), calendar.monthrange(y, m)[1]))
+    y, m = d.year, d.month
+    if d < start_of(y, m):
+        y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    ny, nm = (y, m + 1) if m < 12 else (y + 1, 1)
+    return start_of(y, m), start_of(ny, nm)
 
 
 def credits_status() -> dict:
@@ -2025,7 +2030,10 @@ def credits_status() -> dict:
     days = led["days"]
     before = sum(v for k, v in days.items() if start.isoformat() <= k < today.isoformat())
     since = max(start, min(today, datetime.strptime(led["since"], "%Y-%m-%d").date()))
-    before += AI_CREDIT_BUDGET * (since - start).days / (end - start).days   # jours d'avant le compteur
+    if AI_PRIOR and AI_PRIOR[0] == start.isoformat():
+        before += AI_PRIOR[1]                     # dépense réelle relevée sur Netlify avant le compteur
+    else:
+        before += AI_CREDIT_BUDGET * (since - start).days / (end - start).days   # jours d'avant le compteur
     days_left = max(1, (end - today).days)
     # garde-fou : jamais plus de 3 fois le rythme normal sur une journée
     cap = 3 * AI_CREDIT_BUDGET / (end - start).days
