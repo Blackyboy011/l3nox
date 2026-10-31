@@ -1,0 +1,9 @@
+{
+  "name": "l3nox",
+  "private": true,
+  "description": "Dépendances du service Netlify de L3NOX (le site lui-même est généré par build.py).",
+  "type": "module",
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0"
+  }
+}

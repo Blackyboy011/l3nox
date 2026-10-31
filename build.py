@@ -58,9 +58,14 @@ VENDOR_FEEDS = {
                    "https://kubernetes.io/docs/reference/issues-security/official-cve-feed/index.xml"],
     "GitLab": ["https://about.gitlab.com/security-releases.xml"],
     "AWS": ["https://aws.amazon.com/security/security-bulletins/rss/feed/"],
+    "Ubuntu": ["https://ubuntu.com/security/notices/rss.xml"],
+    "Debian": ["https://www.debian.org/security/dsa-long.rdf", "https://www.debian.org/security/dsa.rdf"],
+    "Google Chrome": ["https://chromereleases.googleblog.com/feeds/posts/default"],
 }
 VENDOR_DAYS = 3
-VENDOR_QUIET = {"Microsoft MSRC": 10}  # éditeurs très bavards : pas de P2 automatique, au plus N avis P3
+VENDOR_QUIET = {"Microsoft MSRC": 10, "Ubuntu": 8, "Debian": 8, "Google Chrome": 3}
+# Pour certains flux, on ne garde que les titres utiles (ex. Chrome : mises à jour de sécurité du poste de travail)
+VENDOR_TITLE_KEEP = {"Google Chrome": re.compile(r"Stable Channel Update for Desktop|Extended Stable", re.I)}  # éditeurs très bavards : pas de P2 automatique, au plus N avis P3
 
 # Base d'alertes GitHub (logiciels open source : Metabase, Kafka, GitLab, WordPress, npm, pip…)
 GHSA_URL = "https://api.github.com/advisories?type=reviewed&severity=critical&per_page=60&sort=published"
@@ -162,6 +167,9 @@ SOURCE_SITES = {
     "Kubernetes": "https://kubernetes.io/docs/reference/issues-security/official-cve-feed/",
     "GitLab": "https://about.gitlab.com/releases/categories/releases/",
     "AWS": "https://aws.amazon.com/security/security-bulletins/",
+    "Ubuntu": "https://ubuntu.com/security/notices",
+    "Debian": "https://www.debian.org/security/",
+    "Google Chrome": "https://chromereleases.googleblog.com/",
     "endoflife.date": "https://endoflife.date/",
     "BleepingComputer": "https://www.bleepingcomputer.com/",
     "The Hacker News": "https://thehackernews.com/",
@@ -173,7 +181,7 @@ SOURCE_SITES = {
 SOURCE_DESC = {
     "CISA KEV": "Catalogue américain des vulnérabilités activement exploitées",
     "CERT-FR alerte": "Alertes de l'ANSSI (menaces en cours)",
-    "CERT-FR avis": "Avis de sécurité de l'ANSSI",
+    "CERT-FR avis": "Avis de sécurité de l'ANSSI (couvre aussi Juniper, Veeam, VMware, Apple, Ivanti…)",
     "Red Hat": "CVE de sévérité critique publiées par Red Hat",
     "GitHub Advisory": "Failles critiques des logiciels open source (avec versions corrigées)",
     "Palo Alto": "Avis de sécurité de l'éditeur (PAN-OS, GlobalProtect…)",
@@ -184,6 +192,9 @@ SOURCE_DESC = {
     "Kubernetes": "Flux officiel des CVE Kubernetes",
     "GitLab": "Versions de sécurité de GitLab",
     "AWS": "Bulletins de sécurité AWS",
+    "Ubuntu": "Avis de sécurité Ubuntu (USN)",
+    "Debian": "Avis de sécurité Debian (DSA)",
+    "Google Chrome": "Mises à jour de sécurité de Chrome (failles exploitées signalées)",
     "endoflife.date": "Dates de fin de maintenance des logiciels",
 }
 
@@ -637,6 +648,8 @@ def collect_vendors() -> list[dict]:
         for e in entries:
             if not e["date"] or e["date"] < p1_cutoff or not e["title"]:
                 continue
+            if source in VENDOR_TITLE_KEEP and not VENDOR_TITLE_KEEP[source].search(e["title"]):
+                continue
             text = f"{e['title']} {e['summary']}"
             if EXPLOIT_RE.search(text):
                 level = EXPLOITED
@@ -1050,6 +1063,37 @@ table.prio{width:100%;border-collapse:collapse;font-size:15.5px}
 .todo-in summary{cursor:pointer;font-weight:700;color:var(--link);font-size:15px;width:max-content;max-width:100%}
 .steps-in{margin:8px 0 0;padding-left:24px;max-width:75ch;font-size:15.5px}
 .steps-in li{margin:5px 0}
+/* Menu, replis et lecture */
+.nav{display:flex;gap:4px 18px;flex-wrap:wrap;font-weight:600;font-size:15px}
+.nav a{color:var(--muted);text-decoration:none;padding:4px 0;border-bottom:2px solid transparent}
+.nav a:hover{color:var(--ink)}
+.nav a[aria-current="page"]{color:var(--ink);border-bottom-color:var(--link)}
+details.dayfold>summary,details.more>summary{cursor:pointer;font-weight:700;color:var(--link);font-size:15px;
+list-style:none;display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border:1px solid var(--rule);
+border-radius:10px;background:var(--sheet);margin:2px 0 6px}
+details.dayfold>summary::-webkit-details-marker,details.more>summary::-webkit-details-marker{display:none}
+details.dayfold>summary::before,details.more>summary::before{content:"+";font-weight:800}
+details.dayfold[open]>summary::before,details.more[open]>summary::before{content:"−"}
+details.dayfold[open]>summary{margin-bottom:12px}
+details.more{margin-top:8px}
+details.more[open]>summary{margin-bottom:6px}
+details.lvfold>summary{list-style:none;cursor:pointer}
+details.lvfold>summary::-webkit-details-marker{display:none}
+details.lvfold>summary .lvh{padding-bottom:12px}
+details.lvfold>summary .lvh::after{content:"Afficher";margin-left:auto;font:700 14px var(--body);color:var(--link)}
+details.lvfold[open]>summary .lvh::after{content:"Masquer"}
+details.lvfold[open]>summary .lvh{padding-bottom:2px}
+.row.plain .sum{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+@media (max-width:680px){.nav{order:2;width:100%;gap:4px 16px}.nav a{font-size:15px}}
+/* Synchronisation */
+.syncst{font-size:13px;color:var(--muted);white-space:nowrap}.syncst.ok{color:var(--ok)}.syncst.err{color:var(--p2)}
+details.sync{margin:10px 0}
+details.sync summary{cursor:pointer;font-weight:700;color:var(--link)}
+#syncform{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0}
+#syncform input{flex:1 1 220px;font:15px var(--body);color:var(--ink);background:var(--sheet);border:1px solid var(--rule);border-radius:8px;padding:9px 12px}
+#syncform button{font:600 14px var(--body);border-radius:8px;padding:9px 12px;cursor:pointer;border:1px solid var(--rule);background:var(--sheet);color:var(--ink)}
+#syncform button[type=submit]{background:var(--link);border-color:var(--link);color:var(--ontag)}
+#syncmsg{min-height:1.2em;margin:4px 0}
 /* Fiches actions */
 .concern{margin:4px 20px 0;color:var(--muted);font-size:15px}
 
@@ -1077,9 +1121,12 @@ btn.addEventListener('click',function(){root.dataset.theme=cur()==='dark'?'light
 label();
 
 /* État des alertes : validées / écartées (mémorisé dans ce navigateur) */
+var SYNC=document.body.dataset.sync||'',syncCode='';try{syncCode=SYNC?(localStorage.getItem('l3nox:sync')||''):''}catch(_){}
 var KEY='l3nox:etat',store={};
 try{store=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(_){store={}}
-function save(){try{localStorage.setItem(KEY,JSON.stringify(store))}catch(_){}}
+function saveLocal(){try{localStorage.setItem(KEY,JSON.stringify(store))}catch(_){}}
+function save(){saveLocal();push()}
+(function(){var lim=Date.now()-150*864e5;Object.keys(store).forEach(function(id){if(!store[id]||!(store[id].t>=lim))delete store[id]})})();
 var LV={p1:'3',p2:'2',p3:'1',news:'0'};
 var EMPTY={all:'Tout est traité ou écarté. Rien d’autre à faire pour le moment.',
   p1:'Aucune faille exploitée en attente.',p2:'Aucune faille critique en attente.',p3:'Aucun avis à surveiller en attente.',
@@ -1087,7 +1134,8 @@ var EMPTY={all:'Tout est traité ou écarté. Rien d’autre à faire pour le mo
 var view='all',terms=[];
 var norm=function(s){return s.normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase()};
 var rows=[].slice.call(document.querySelectorAll('#fil .row'));
-rows.forEach(function(r){r.dataset.s=norm(r.querySelector('.head').innerText+' '+r.querySelector('.meta').innerText+' '+((r.querySelector('.sum')||{}).innerText||''))});
+rows.forEach(function(r){r.dataset.s=norm(r.querySelector('.head').textContent+' '+r.querySelector('.meta').textContent+' '+((r.querySelector('.sum')||{}).textContent||''))});
+var lastMode='';
 function st(r){var s=store[r.dataset.id];return s?s.s:''}
 function inView(r,v){var s=st(r);
   if(v==='done'||v==='hidden')return s===v;
@@ -1112,6 +1160,9 @@ function paint(){
     var n=b.querySelectorAll('.row:not([hidden])').length;b.hidden=!n;
     b.querySelector('.n').textContent=n+' élément'+(n>1?'s':'')});
   document.querySelectorAll('#fil .day').forEach(function(d){d.hidden=!d.querySelector('.lvblock:not([hidden])')});
+  var mode=view+'|'+terms.join(' ');
+  if(mode!==lastMode){document.querySelectorAll('#fil details.dayfold').forEach(function(d){d.open=(view!=='all'||terms.length>0)});
+    document.querySelectorAll('#fil details.lvfold').forEach(function(d){d.open=(view==='p3'||view==='done'||view==='hidden'||terms.length>0)});lastMode=mode}
   ['all','p1','p2','p3','news','done','hidden'].forEach(function(v){
     var c=rows.filter(function(r){return inView(r,v)}).length;
     var b=document.querySelector('.f[data-v="'+v+'"]');if(b){b.querySelector('b').textContent=c;b.setAttribute('aria-pressed',v===view)}});
@@ -1130,8 +1181,8 @@ function say(msg,undo){toast.querySelector('span').textContent=msg;undoFn=undo;t
 toast.querySelector('button').addEventListener('click',function(){if(undoFn)undoFn();toast.hidden=true;undoFn=null});
 
 function setState(ids,s){var prev={};ids.forEach(function(id){prev[id]=store[id];
-  if(s)store[id]={s:s,t:Date.now()};else delete store[id]});save();paint();
-  return function(){ids.forEach(function(id){if(prev[id])store[id]=prev[id];else delete store[id]});save();paint()}}
+  store[id]={s:s||'',t:Date.now()}});save();paint();
+  return function(){ids.forEach(function(id){store[id]={s:prev[id]?prev[id].s:'',t:Date.now()}});save();paint()}}
 
 document.getElementById('fil').addEventListener('click',function(ev){
   var b=ev.target.closest('.act');if(!b)return;var r=b.closest('.row'),id=r.dataset.id;
@@ -1157,6 +1208,29 @@ document.addEventListener('keydown',function(ev){
 var h=location.hash.slice(1);if(LV[h]||h==='done'||h==='hidden')view=h;
 paint();
 
+/* Synchronisation personnelle entre appareils (code personnel, facultatif) */
+function merge(items){var ch=false;Object.keys(items||{}).forEach(function(id){var v=items[id];
+  if(v&&typeof v.t==='number'&&(!store[id]||store[id].t<v.t)){store[id]={s:v.s||'',t:v.t};ch=true}});return ch}
+function syncMsg(kind){var m={ok:'Choix synchronisés à '+new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}),
+  code:'Code incorrect : la synchronisation est désactivée.',err:'Synchronisation impossible pour le moment, nouvel essai plus tard.',off:''}[kind]||'';
+  var a=document.getElementById('syncmsg'),b=document.getElementById('syncst');if(a)a.textContent=m;
+  if(b){b.textContent=kind==='ok'?'Synchronisé':kind==='err'?'Hors ligne':'';b.className='syncst '+kind}
+  if(kind==='code'){syncCode='';try{localStorage.removeItem('l3nox:sync')}catch(_){}}}
+function pull(){if(!SYNC||!syncCode)return;
+  fetch(SYNC,{headers:{'x-l3nox-code':syncCode}}).then(function(r){if(!r.ok)throw r.status;return r.json()})
+  .then(function(j){if(merge(j.items)){saveLocal();paint()}pushNow()}).catch(function(e){syncMsg(e===403?'code':'err')})}
+function pushNow(){if(!SYNC||!syncCode)return;
+  fetch(SYNC,{method:'PUT',headers:{'x-l3nox-code':syncCode,'content-type':'application/json'},body:JSON.stringify({items:store})})
+  .then(function(r){if(!r.ok)throw r.status;return r.json()})
+  .then(function(j){if(merge(j.items)){saveLocal();paint()}syncMsg('ok')}).catch(function(e){syncMsg(e===403?'code':'err')})}
+var pushT;function push(){if(!SYNC||!syncCode)return;clearTimeout(pushT);pushT=setTimeout(pushNow,800)}
+var form=document.getElementById('syncform');
+if(form){form.addEventListener('submit',function(ev){ev.preventDefault();var c=document.getElementById('synccode').value.trim();if(!c)return;
+  syncCode=c;try{localStorage.setItem('l3nox:sync',c)}catch(_){}document.getElementById('synccode').value='';pull()});
+  document.getElementById('syncoff').addEventListener('click',function(){syncCode='';try{localStorage.removeItem('l3nox:sync')}catch(_){}syncMsg('off');
+    document.getElementById('syncmsg').textContent='Synchronisation désactivée sur cet appareil. Vos choix restent enregistrés ici.'})}
+if(syncCode){pull();setInterval(pull,5*60*1000);document.addEventListener('visibilitychange',function(){if(!document.hidden)pull()})}
+
 /* Cases « Que faire » */
 var day=document.body.dataset.day;
 function progress(g){var b=g.querySelectorAll('.steps input'),c=g.querySelectorAll('.steps input:checked').length,p=g.querySelector('.progress');
@@ -1179,6 +1253,28 @@ document.querySelectorAll('.copy').forEach(function(b){b.addEventListener('click
 
 def plural(n: int, one: str, many: str) -> str:
     return f"{n}\u00a0{one if n <= 1 else many}"
+
+
+SYNC_URL = os.environ.get("L3NOX_SYNC_URL", "").strip() or (
+    AI_URL.strip()[: -len("/api/ia")] + "/api/etat" if AI_URL.strip().endswith("/api/ia") else "")
+
+
+def sync_html() -> str:
+    if not SYNC_URL:
+        return "<p>Les alertes validées ou écartées sont mémorisées dans ce navigateur uniquement.</p>"
+    return ('<details class="sync" id="sync"><summary>Synchroniser mes choix entre mes appareils</summary>'
+            "<p>Par défaut, les alertes validées ou écartées sont mémorisées dans ce navigateur uniquement, et chaque "
+            "visiteur garde ses propres choix. Avec votre code personnel, vos choix vous suivent sur tous vos appareils.</p>"
+            '<form id="syncform"><input id="synccode" type="password" autocomplete="current-password" '
+            'placeholder="Code de synchronisation" aria-label="Code de synchronisation">'
+            '<button type="submit">Activer sur cet appareil</button>'
+            '<button type="button" id="syncoff">Désactiver</button></form><p id="syncmsg" aria-live="polite"></p></details>')
+
+
+def nav_html(active: str = "") -> str:
+    links = [("./", "Bulletin", "home"), ("archives.html", "Archives", "archives"), ("a-propos.html", "À propos", "about")]
+    return '<nav class="nav" aria-label="Menu">' + "".join(
+        f'<a href="{h}"{" aria-current=\"page\"" if k == active else ""}>{t}</a>' for h, t, k in links) + "</nav>"
 
 
 def date_fr(d: datetime) -> str:
@@ -1306,6 +1402,17 @@ def todo_html(it: dict, with_steps: bool) -> str:
     return f'<details class="todo-in"><summary>{label} ({e(pb["label"])})</summary>{steps}{cmds}</details>'
 
 
+def post_body_html(md: str) -> str:
+    """Introduction toujours visible ; tableau, mesures et la suite derrière « Lire l'article complet »."""
+    lines = md.splitlines()
+    cut = next((n for n, l in enumerate(lines) if l.lstrip().startswith("|") or l.lstrip().startswith("#")), len(lines))
+    intro, rest = "\n".join(lines[:cut]).strip(), "\n".join(lines[cut:]).strip()
+    if not rest:
+        return md_to_html(md)
+    return (md_to_html(intro) + '<details class="more"><summary>Lire l\'article complet</summary>'
+            + md_to_html(rest) + "</details>")
+
+
 ACTS_HTML = ('<div class="acts"><button class="act ok" type="button" title="Nous étions concernés et c\'est traité">Valider</button>'
              '<button class="act no" type="button" title="Retirer cette alerte de la liste">Pas concerné</button>'
              '<span class="state-lab"></span>'
@@ -1319,7 +1426,8 @@ def item_row(it: dict, post: dict | None = None) -> str:
     head_attrs = f'class="row{" post" if post else " plain"}" id="{anchor(it)}" data-id="{e(entry_id(it))}" data-lv="{lvl}"'
 
     if post:  # article rédigé par l'IA
-        prio = post.get("prio") or f"{LEVEL_TAG[lvl]} — {LEVEL_NAME[lvl]}"
+        qual = re.sub(r"^\s*\**\s*P[123]\b\s*", "", post.get("prio") or "").strip()
+        prio = f"{LEVEL_TAG[lvl]} {qual}" if qual else f"{LEVEL_TAG[lvl]} — {LEVEL_NAME[lvl]}"
         title = post.get("title") or it["title"]
         extra = []
         if it["ransomware"]:
@@ -1330,7 +1438,7 @@ def item_row(it: dict, post: dict | None = None) -> str:
                 f'<p class="pstamp"><time datetime="{(it["date"] or NOW).isoformat()}">{e(stamp_fr(it["date"]))}</time>{new}</p>'
                 f'<p class="pprio lv{lvl}">{md_inline(prio)}</p>'
                 f'<div class="head"><h4 class="ptitle"><a class="t" href="{e(it["link"])}" target="_blank" rel="noopener">{e(title)}</a></h4></div>'
-                f'<div class="sum pbody">{md_to_html(post["md"])}</div>'
+                f'<div class="sum pbody">{post_body_html(post["md"])}</div>'
                 f'<div class="meta psrc"><span>Sources officielles :</span>{" · ".join(sources_links(it))}'
                 f'{"".join(extra)}{"".join(f"<span class=cve>{e(c)}</span>" for c in it["cves"][:3])}</div>'
                 f'{todo_html(it, with_steps=False)}{ACTS_HTML}</article></li>')
@@ -1521,7 +1629,17 @@ def md_to_html(md: str) -> str:
 def briefing_html(b) -> str:
     if b and b.get("md"):
         gen = datetime.fromisoformat(b["generated"]).astimezone(PARIS)
-        body = md_to_html(b["md"])
+        chunks, cur = [], []
+        for line in b["md"].splitlines():
+            if line.startswith("## ") and cur:
+                chunks.append("\n".join(cur))
+                cur = []
+            cur.append(line)
+        chunks.append("\n".join(cur))
+        body = md_to_html("\n".join(chunks[:2]))
+        if len(chunks) > 2:
+            body += ('<details class="more"><summary>Lire la suite du briefing</summary>'
+                     + md_to_html("\n".join(chunks[2:])) + "</details>")
         if b.get("truncated"):
             body += '<p class="bnote">Le briefing a été raccourci : consultez le fil ci-dessous pour le détail.</p>'
         sub = (f"Rédigé par l'IA à {gen.strftime('%H:%M')} le {gen.strftime('%d/%m')} à partir des sources officielles "
@@ -1614,7 +1732,7 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
         days.setdefault(key, {}).setdefault(it["level"], []).append(it)
     keys = sorted((k for k in days if k != "older"), reverse=True) + (["older"] if "older" in days else [])
     fil = []
-    for k in keys:
+    for n_day, k in enumerate(keys):
         if k == "older":
             title, sub = "Plus ancien", f"avant le {(today - timedelta(days=TIMELINE_DAYS - 1)).strftime('%d/%m')}"
         else:
@@ -1625,12 +1743,24 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
             if not items:
                 continue
             tag = LEVEL_TAG[lv] or "Actu"
-            blocks.append(f'<div class="lvblock lv{lv}"><h3 class="lvh"><span class="tag lv{lv}">{tag}</span>'
-                          f'{e(LEVEL_NAME[lv])} <span class="n"></span></h3>'
-                          f'<ul class="rows">{"".join(item_row(i, posts.get(entry_id(i))) for i in items)}</ul></div>')
+            head = (f'<h3 class="lvh"><span class="tag lv{lv}">{tag}</span>'
+                    f'{e(LEVEL_NAME[lv])} <span class="n"></span></h3>')
+            rows_html = f'<ul class="rows">{"".join(item_row(i, posts.get(entry_id(i))) for i in items)}</ul>'
+            if lv <= WATCH and len(items) > 3:  # beaucoup d'avis secondaires : replié par défaut
+                blocks.append(f'<div class="lvblock lv{lv}"><details class="lvfold"><summary>{head}</summary>'
+                              f'{rows_html}</details></div>')
+            else:
+                blocks.append(f'<div class="lvblock lv{lv}">{head}{rows_html}</div>')
         dkey = "older" if k == "older" else k.isoformat()
+        inner = "".join(blocks)
+        if n_day >= 2:  # au-delà d'aujourd'hui et d'hier : replié, pour une page plus courte
+            counts = ", ".join(f"{sum(len(v) for lv, v in days[k].items() if lv == L)} {LEVEL_TAG[L]}"
+                               for L in (EXPLOITED, CRITICAL, WATCH) if days[k].get(L))
+            total = sum(len(v) for v in days[k].values())
+            inner = (f'<details class="dayfold" data-fold="1"><summary>Afficher {plural(total, "alerte", "alertes")}'
+                     f'{" (" + counts + ")" if counts else ""}</summary>{inner}</details>')
         fil.append(f'<section class="day" id="j-{dkey}"><div class="dayh"><h2>{e(title)}</h2>'
-                   f'<span>{e(sub)}</span></div>{"".join(blocks)}</section>')
+                   f'<span>{e(sub)}</span></div>{inner}</section>')
 
     # Niveau du jour
     urgent = [i for i in entries if i["level"] >= CRITICAL]
@@ -1693,8 +1823,8 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
 <link rel="stylesheet" href="{FONTS}">
 <script>try{{var t=localStorage.getItem('l3nox:theme');if(t)document.documentElement.dataset.theme=t}}catch(_){{}}</script>
 <style>{CSS}{CSS_EXTRA}</style></head>
-<body data-day="{loc.strftime('%Y-%m-%d')}">
-<div class="wrap"><header class="bar"><a class="logo" href="./">L<span>3</span>NOX</a>
+<body data-day="{loc.strftime('%Y-%m-%d')}" data-sync="{e(SYNC_URL)}">
+<div class="wrap"><header class="bar"><a class="logo" href="./">L<span>3</span>NOX</a>{nav_html("home")}
 <p class="stamp">{e(date_fr(loc)).capitalize()}, mis à jour à {loc.strftime("%H:%M")}</p>
 <button class="theme" id="theme" type="button">Mode nuit</button></header></div>
 <div class="band {band}"><div class="wrap">
@@ -1706,7 +1836,7 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
 <div class="tools"><div class="filters" role="group" aria-label="Filtrer par niveau">{filters}</div>
 <div class="field">{search_icon}
 <input id="q" type="search" placeholder="Rechercher un produit, une CVE, une source…" aria-label="Rechercher" autocomplete="off">
-<span id="qcount" aria-live="polite"></span><button class="clear" id="clear" type="button">Vider la liste</button></div></div>
+<span id="qcount" aria-live="polite"></span><span id="syncst" class="syncst"></span><button class="clear" id="clear" type="button">Vider la liste</button></div></div>
 <div id="fil">{"".join(fil)}</div>
 <p id="viewempty" class="empty viewempty" hidden></p>
 {section("Panorama par domaine", "Où en est chaque partie de l'infrastructure", panorama_html(entries, eol, status_rows), "panorama")}
@@ -1715,7 +1845,7 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
 {section("Sources", "Cliquez sur une source pour ouvrir son site", sources_html(), "sources")}
 <footer>
 <p>Ce bulletin est assemblé automatiquement toutes les 15 minutes. Il ne vérifie pas les informations : le niveau de priorité est déduit des sources (catalogue CISA, alertes CERT-FR) et de mots-clés. Référez-vous toujours à l'avis officiel.</p>
-<p>Les alertes validées ou écartées sont mémorisées dans ce navigateur uniquement.</p>
+{sync_html()}
 <p>Les commandes proposées sont des exemples génériques. Testez-les avant de les appliquer en production.</p>
 <p><a href="a-propos.html">À propos et mentions légales</a> · <a href="alertes.xml">Flux RSS des alertes</a></p>
 </footer></main>
@@ -2117,7 +2247,7 @@ def head_extra(title: str, desc: str, path: str = "") -> str:
     return "\n".join(tags)
 
 
-def simple_page(title: str, body: str, path: str, desc: str = SITE_DESC) -> str:
+def simple_page(title: str, body: str, path: str, desc: str = SITE_DESC, active: str = "", extra_css: str = "") -> str:
     return f"""<!doctype html>
 <html lang="fr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -2134,8 +2264,9 @@ def simple_page(title: str, body: str, path: str, desc: str = SITE_DESC) -> str:
 .doc p,.doc li{{line-height:1.65}}
 .doc ul{{padding-left:22px}}
 .back{{display:inline-block;margin-top:28px;font-weight:700}}
+{CSS_EXTRA}{extra_css}
 </style></head>
-<body><div class="wrap"><header class="bar"><a class="logo" href="./">L<span>3</span>NOX</a></header>
+<body><div class="wrap"><header class="bar"><a class="logo" href="./">L<span>3</span>NOX</a>{nav_html(active)}</header>
 <main class="doc">{body}<a class="back" href="./">Retour au bulletin</a></main></div></body></html>"""
 
 
@@ -2177,10 +2308,10 @@ ou écartées, cases cochées) sont enregistrées uniquement dans votre navigate
 <p>Les polices de caractères sont chargées depuis Google Fonts : votre navigateur contacte donc les serveurs de Google
 pour les télécharger, ce qui leur transmet votre adresse IP.</p>"""
     return simple_page("À propos et mentions légales", body, "a-propos.html",
-                       f"Ce qu'est {SITE_NAME}, d'où viennent ses informations, et mentions légales.")
+                       f"Ce qu'est {SITE_NAME}, d'où viennent ses informations, et mentions légales.", active="about")
 
 
-def write_extras(out_dir: str) -> None:
+def write_extras(out_dir: str, extra_pages: list[str] | None = None) -> None:
     files = {"favicon.svg": FAVICON_SVG, "a-propos.html": about_page(),
              "404.html": simple_page("Page introuvable",
                                      "<h1>Page introuvable</h1><p>Cette page n'existe pas ou n'existe plus.</p>", "404.html")}
@@ -2192,12 +2323,183 @@ def write_extras(out_dir: str) -> None:
                                 '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
                                 f'<url><loc>{base}</loc><lastmod>{day}</lastmod><changefreq>hourly</changefreq><priority>1.0</priority></url>\n'
                                 f'<url><loc>{base}a-propos.html</loc><changefreq>monthly</changefreq><priority>0.3</priority></url>\n'
-                                '</urlset>\n')
+                                + "".join(f'<url><loc>{base}{p}</loc><changefreq>{"daily" if p == "archives.html" else "monthly"}</changefreq>'
+                                          f'<priority>{"0.6" if p == "archives.html" else "0.4"}</priority></url>\n'
+                                          for p in (extra_pages or []))
+                                + '</urlset>\n')
     for name, content in files.items():
         with open(os.path.join(out_dir, name), "w", encoding="utf-8") as f:
             f.write(content)
     with open(os.path.join(out_dir, "og.png"), "wb") as f:
         f.write(base64.b64decode(OG_PNG_B64))
+
+
+
+# ═════════════════════ Historique et archives ═════════════════════
+ARCHIVE_DIR = os.path.join(os.environ.get("L3NOX_STATE", "state"), "archives")
+ARCHIVE_KEEP_DAYS = 90
+
+
+def arch_item(it: dict, post) -> dict:
+    d = {"id": entry_id(it), "level": it["level"], "title": it["title"], "link": it["link"], "source": it["source"],
+         "date": (it["date"] or NOW).isoformat(), "summary": it["summary"][:500], "cves": it["cves"][:6],
+         "playbook": it["playbook"], "rw": bool(it["ransomware"]),
+         "also": [[a["source"], a["link"]] for a in it.get("also", [])[:5]]}
+    if post:
+        d["post"] = {k: post[k] for k in ("prio", "title", "md") if k in post}
+    return d
+
+
+def from_arch(d: dict) -> tuple[dict, dict | None]:
+    it = {"source": d.get("source", ""), "title": d.get("title", ""), "link": d.get("link", ""),
+          "date": parse_date(d.get("date", "")), "summary": d.get("summary", ""), "level": int(d.get("level", 1)),
+          "playbook": d.get("playbook") if d.get("playbook") in PB_BY_ID else None, "cves": d.get("cves", []),
+          "action": "", "due": "", "ransomware": bool(d.get("rw")),
+          "also": [{"source": a[0], "link": a[1], "title": ""} for a in d.get("also", []) if len(a) == 2]}
+    return it, d.get("post")
+
+
+def load_archives() -> dict:
+    """Archives locales ; à défaut, on les récupère sur le site publié (elles ne se perdent pas)."""
+    days = {}
+    try:
+        for name in os.listdir(ARCHIVE_DIR):
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}\.json", name):
+                with open(os.path.join(ARCHIVE_DIR, name), encoding="utf-8") as f:
+                    days[name[:10]] = json.load(f)
+    except OSError:
+        pass
+    if days or not base_url():
+        return days
+    try:
+        index = json.loads(fetch(base_url() + "archives/index.json", timeout=15))
+        for day in index.get("days", [])[:ARCHIVE_KEEP_DAYS]:
+            if re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                try:
+                    days[day] = json.loads(fetch(f"{base_url()}archives/{day}.json", timeout=15))
+                except Exception:
+                    pass
+        print(f"[ok] Archives : {len(days)} jour(s) récupéré(s) depuis le site publié.")
+    except Exception:
+        pass
+    return days
+
+
+def update_archives(entries: list[dict], posts: dict, briefing) -> dict:
+    days = load_archives()
+    today = NOW.astimezone(PARIS).date()
+    for it in entries:
+        if it["level"] < WATCH or not it["date"]:
+            continue
+        d = it["date"].astimezone(PARIS).date()
+        if (today - d).days > 1:  # on archive aujourd'hui et hier (les avis arrivent parfois en retard)
+            continue
+        day = days.setdefault(d.isoformat(), {"items": {}, "briefing": None})
+        prev = day["items"].get(entry_id(it))
+        new = arch_item(it, posts.get(entry_id(it)))
+        if prev and prev.get("post") and not new.get("post"):
+            new["post"] = prev["post"]
+        if prev:
+            new["level"] = max(new["level"], prev.get("level", 0))
+        day["items"][entry_id(it)] = new
+    if briefing and briefing.get("md") and briefing.get("generated"):
+        gday = datetime.fromisoformat(briefing["generated"]).astimezone(PARIS).date().isoformat()
+        if gday in days or gday == today.isoformat():
+            days.setdefault(gday, {"items": {}, "briefing": None})["briefing"] = {
+                "md": briefing["md"], "generated": briefing["generated"]}
+    limit = (today - timedelta(days=ARCHIVE_KEEP_DAYS)).isoformat()
+    days = {k: v for k, v in days.items() if k >= limit}
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    for name in os.listdir(ARCHIVE_DIR):
+        if name.endswith(".json") and name[:10] not in days:
+            os.remove(os.path.join(ARCHIVE_DIR, name))
+    for k, v in days.items():
+        with open(os.path.join(ARCHIVE_DIR, f"{k}.json"), "w", encoding="utf-8") as f:
+            json.dump(v, f, ensure_ascii=False)
+    print(f"[ok] Archives : {len(days)} jour(s) conservé(s).")
+    return days
+
+
+def day_counts(day: dict) -> dict:
+    c = {EXPLOITED: 0, CRITICAL: 0, WATCH: 0}
+    for d in day.get("items", {}).values():
+        lv = int(d.get("level", 1))
+        if lv in c:
+            c[lv] += 1
+    return c
+
+
+def mini_badges(c: dict) -> str:
+    return "".join(f'<span class="mini lv{lv}">{n} {LEVEL_TAG[lv]}</span>' for lv, n in c.items() if n) or \
+        '<span class="calm">RAS</span>'
+
+
+ARCH_CSS = """
+.acts{display:none}
+.arch-list{list-style:none;margin:0;padding:0;background:var(--sheet);border:1px solid var(--rule);border-radius:14px}
+.arch-list li{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:12px 18px;border-top:1px solid var(--rule)}
+.arch-list li:first-child{border-top:0}
+.arch-list a{font-weight:700;min-width:250px}
+.arch-list .cnt{display:flex;gap:6px;flex-wrap:wrap}
+.arch-list .bf{color:var(--muted);font-size:14px}
+.daynav{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:6px 0 20px;font-weight:600}
+.doc{max-width:860px}
+.doc ul.arch-list{padding:0}
+.doc ul.rows{padding:0 20px}
+@media (max-width:680px){.doc ul.rows{padding:0 14px}.arch-list a{min-width:0}}
+.doc .lvblock{margin-top:18px}
+"""
+
+
+def archive_pages(days: dict) -> dict:
+    """Pages HTML : archives.html (liste des jours) et archive-AAAA-MM-JJ.html (un bulletin par jour)."""
+    pages, keys = {}, sorted(days, reverse=True)
+    rows = []
+    for k in keys:
+        d = datetime.strptime(k, "%Y-%m-%d")
+        bf = '<span class="bf">avec briefing</span>' if days[k].get("briefing") else ""
+        rows.append(f'<li><a href="archive-{k}.html">{e(date_fr(d)).capitalize()}</a>'
+                    f'<span class="cnt">{mini_badges(day_counts(days[k]))}</span>{bf}</li>')
+    body = ("<h1>Archives</h1><p>Les bulletins des {n} derniers jours : alertes, articles rédigés et briefing de chaque "
+            "journée.</p>").format(n=ARCHIVE_KEEP_DAYS)
+    body += f'<ul class="arch-list">{"".join(rows)}</ul>' if rows else '<p class="empty">Les archives se rempliront au fil des jours.</p>'
+    pages["archives.html"] = simple_page("Archives", body, "archives.html",
+                                         f"Historique des bulletins SysOps de {SITE_NAME}.", active="archives",
+                                         extra_css=ARCH_CSS)
+    for n, k in enumerate(keys):
+        day, d = days[k], datetime.strptime(k, "%Y-%m-%d")
+        newer = f'<a href="archive-{keys[n - 1]}.html">Jour suivant</a>' if n > 0 else "<span></span>"
+        older = f'<a href="archive-{keys[n + 1]}.html">Jour précédent</a>' if n + 1 < len(keys) else "<span></span>"
+        parts = [f"<h1>Bulletin du {e(date_fr(d))}</h1>", f'<div class="daynav">{older}<a href="archives.html">Toutes les archives</a>{newer}</div>']
+        if day.get("briefing"):
+            parts.append(f'<section><div class="sh"><h2>Briefing</h2></div><div class="bcard md">{md_to_html(day["briefing"]["md"])}</div></section>')
+        items = [from_arch(x) for x in day.get("items", {}).values()]
+        for lv in (EXPLOITED, CRITICAL, WATCH):
+            sel = sorted((p for p in items if p[0]["level"] == lv), key=lambda p: p[0]["date"] or NOW, reverse=True)
+            if sel:
+                parts.append(f'<div class="lvblock lv{lv}"><h3 class="lvh"><span class="tag lv{lv}">{LEVEL_TAG[lv]}</span>'
+                             f'{e(LEVEL_NAME[lv])} <span class="n">{plural(len(sel), "élément", "éléments")}</span></h3>'
+                             f'<ul class="rows">{"".join(item_row(it, post) for it, post in sel)}</ul></div>')
+        if not items and not day.get("briefing"):
+            parts.append('<p class="empty">Rien d\'archivé pour cette journée.</p>')
+        pages[f"archive-{k}.html"] = simple_page(f"Bulletin du {date_fr(d)}", "".join(parts), f"archive-{k}.html",
+                                                 f"Bulletin SysOps {SITE_NAME} du {date_fr(d)}.", active="archives",
+                                                 extra_css=ARCH_CSS)
+    return pages
+
+
+def write_archives(out_dir: str, days: dict) -> list[str]:
+    os.makedirs(os.path.join(out_dir, "archives"), exist_ok=True)
+    for k, v in days.items():
+        with open(os.path.join(out_dir, "archives", f"{k}.json"), "w", encoding="utf-8") as f:
+            json.dump(v, f, ensure_ascii=False)
+    with open(os.path.join(out_dir, "archives", "index.json"), "w", encoding="utf-8") as f:
+        json.dump({"days": sorted(days, reverse=True)}, f)
+    pages = archive_pages(days)
+    for name, content in pages.items():
+        with open(os.path.join(out_dir, name), "w", encoding="utf-8") as f:
+            f.write(content)
+    return sorted(pages)
 
 
 # ═════════════════════ Notifications push (ntfy) ═════════════════════
@@ -2298,7 +2600,8 @@ def main(out_dir: str = "_site") -> None:
     urgent = [i for i in kev + cert + redhat + vendors + ghsa if i["level"] >= CRITICAL]
     with open(os.path.join(out_dir, "alertes.xml"), "w", encoding="utf-8") as f:
         f.write(render_rss(urgent))
-    write_extras(out_dir)
+    days = update_archives(merged, posts, briefing)
+    write_extras(out_dir, write_archives(out_dir, days))
     if SITE_DOMAIN:
         with open(os.path.join(out_dir, "CNAME"), "w") as f:
             f.write(SITE_DOMAIN)
