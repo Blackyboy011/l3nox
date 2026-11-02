@@ -654,6 +654,12 @@ def collect_redhat() -> list[dict]:
                        parse_date(v.get("public_date", "")) or NOW, summary, level)
         if cve and cve not in it["cves"]:
             it["cves"].insert(0, cve)
+        try:
+            sc = float(v.get("cvss3_score") or 0)
+            if sc > 0:
+                it["cvss"] = {"score": sc, "src": "Red Hat"}
+        except (TypeError, ValueError):
+            pass
         items.append(it)
     return items
 
@@ -723,6 +729,11 @@ def collect_ghsa() -> list[dict]:
         parts.append(("Corrigé en : " + ", ".join(dict.fromkeys(fixes[:4]))) if fixes else "Pas encore de version corrigée")
         it = make_item("GitHub Advisory", clean(a.get("summary", ""), 200), a.get("html_url", ""), date,
                        " · ".join(parts), CRITICAL)
+        try:
+            if score and float(score) > 0:
+                it["cvss"] = {"score": float(score), "src": "GitHub"}
+        except (TypeError, ValueError):
+            pass
         if a.get("cve_id") and a["cve_id"] not in it["cves"]:
             it["cves"].insert(0, a["cve_id"])
         items.append(it)
@@ -919,6 +930,10 @@ font-stretch:118%;color:var(--lvc);border:1.5px solid var(--lvc);border-radius:5
 border-radius:999px;padding:1px 9px;white-space:nowrap}
 .meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:3px 14px;margin-top:5px;font-size:14px;color:var(--muted)}
 .src{font-weight:600;color:var(--link);text-decoration:none}.src:hover{text-decoration:underline}
+.sev{display:inline-block;font:700 12.5px/1.5 var(--body);border-radius:5px;padding:0 7px;margin:0 6px;white-space:nowrap;
+color:var(--sc);background:color-mix(in srgb,var(--sc) 13%,transparent);border:1px solid color-mix(in srgb,var(--sc) 35%,transparent)}
+.sev.s4{--sc:var(--p1)}.sev.s3{--sc:var(--p2)}.sev.s2{--sc:var(--p3)}.sev.s1{--sc:var(--muted)}
+.pprio .sev{vertical-align:2px;margin-left:10px}.meta .sev{margin:0}
 .cve{font:13px var(--mono);color:var(--ink);background:color-mix(in srgb,var(--ink) 7%,transparent);border-radius:4px;padding:1px 6px}
 .flag{color:var(--p1);font-weight:700}
 .pb{color:var(--link)}
@@ -1409,6 +1424,120 @@ LEVEL_NAME = {EXPLOITED: "Failles exploitées", CRITICAL: "Failles critiques", W
 TIMELINE_DAYS = 7  # au-delà, les alertes vont dans « Plus ancien »
 
 
+# ═════════════════════ Niveau de sévérité (score CVSS) ═════════════════════
+# Score officiel de la fiche CVE (éditeur, ou CISA à défaut), lu dans le registre CVE public.
+# Gratuit, sans IA ni crédit Netlify. Gardé en mémoire pour ne pas reposer la question à chaque passage.
+CVSS_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "cvss.json")
+CVSS_PER_RUN = 60         # fiches CVE consultées au maximum par passage
+CVSS_RETRY_HOURS = 12     # une fiche encore sans score est re-consultée au plus toutes les N heures
+CVE_API = "https://cveawg.mitre.org/api/cve/{cve}"
+CVE_RAW = "https://raw.githubusercontent.com/CVEProject/cvelistV5/main/cves/{y}/{k}xxx/{cve}.json"
+
+
+def sev_label(score: float) -> tuple[str, str]:
+    """Libellé français et classe CSS du niveau de sévérité CVSS."""
+    if score >= 9:
+        return "Critique", "s4"
+    if score >= 7:
+        return "Élevée", "s3"
+    if score >= 4:
+        return "Moyenne", "s2"
+    return ("Faible", "s1") if score > 0 else ("Aucune", "s1")
+
+
+def parse_cve_record(data: dict) -> dict | None:
+    """Meilleur score CVSS d'une fiche CVE 5.x : celui de l'éditeur (CNA), sinon celui de la CISA (ADP)."""
+    cont = (data or {}).get("containers") or {}
+    blocks = [("éditeur", (cont.get("cna") or {}).get("metrics") or [])]
+    for a in cont.get("adp") or []:
+        who = ((a.get("providerMetadata") or {}).get("shortName") or "ADP").replace("-ADP", "")
+        blocks.append((who, a.get("metrics") or []))
+    for who, metrics in blocks:
+        found = []
+        for m in metrics:
+            for k, v in (m or {}).items():
+                if k.startswith("cvssV") and isinstance(v, dict) and v.get("baseScore") is not None:
+                    try:
+                        found.append((v.get("version") or k[5:].replace("_", "."), float(v["baseScore"]),
+                                      str(v.get("vectorString") or "")[:200]))
+                    except (TypeError, ValueError):
+                        pass
+        if found:  # on préfère la version la plus récente (4.0, puis 3.1, 3.0, 2.0)
+            ver, score, vec = max(found, key=lambda f: (str(f[0]), f[1]))
+            return {"score": score, "ver": str(ver), "vec": vec, "src": who}
+    return None
+
+
+def fetch_cvss(cve: str) -> dict | None:
+    m = re.fullmatch(r"CVE-(\d{4})-(\d+)", cve)
+    if not m:
+        return None
+    urls = [CVE_API.format(cve=cve), CVE_RAW.format(y=m.group(1), k=int(m.group(2)) // 1000, cve=cve)]
+    for u in urls:
+        try:
+            return parse_cve_record(json.loads(fetch(u, timeout=12))) or {}
+        except Exception:
+            continue
+    return None   # registre injoignable : on réessaiera au prochain passage
+
+
+def enrich_cvss(entries: list[dict]) -> None:
+    """Ajoute le score CVSS (le plus élevé des CVE citées) aux alertes P1, P2 et P3."""
+    try:
+        with open(CVSS_FILE, encoding="utf-8") as f:
+            cache = json.load(f)
+    except (OSError, ValueError):
+        cache = {}
+    now_s, asked = NOW.timestamp(), 0
+    wanted = sorted((i for i in entries if i["level"] >= WATCH and i["cves"]),
+                    key=lambda i: (-i["level"], -(i["date"].timestamp() if i["date"] else 0)))
+    for it in wanted:
+        for cve in it["cves"][:3]:
+            c = cache.get(cve)
+            stale = c is not None and not c.get("score") and now_s - c.get("t", 0) > CVSS_RETRY_HOURS * 3600
+            if (c is None or stale) and asked < CVSS_PER_RUN:
+                asked += 1
+                got = fetch_cvss(cve)
+                if got is not None:
+                    cache[cve] = dict(got, t=now_s)
+    for it in entries:
+        best = dict(it["cvss"]) if it.get("cvss") else None
+        for cve in it["cves"][:3]:
+            c = cache.get(cve) or {}
+            if c.get("score") and (not best or c["score"] > best["score"] or best.get("src") in ("GitHub", "Red Hat")):
+                best = {k: c[k] for k in ("score", "ver", "vec", "src") if k in c}
+        if best:
+            it["cvss"] = best
+    keep = now_s - 120 * 86400
+    cache = {k: v for k, v in cache.items() if v.get("t", 0) >= keep}
+    os.makedirs(os.path.dirname(CVSS_FILE) or ".", exist_ok=True)
+    with open(CVSS_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False)
+    n = sum(1 for i in entries if i.get("cvss"))
+    STATUS.append(("Registre CVE (sévérité)", True, f"{n} alerte(s) notée(s)"))
+    print(f"[ok] Sévérité CVSS : {n} alerte(s) notée(s), {asked} fiche(s) CVE consultée(s), {len(cache)} en mémoire.")
+
+
+def sev_html(it: dict, long: bool = False) -> str:
+    c = it.get("cvss")
+    if not c or not c.get("score"):
+        return ""
+    lab, cls = sev_label(c["score"])
+    who = {"éditeur": "l'éditeur", "CISA": "la CISA"}.get(c.get("src"), c.get("src") or "la fiche CVE")
+    tip = f'Score CVSS{" " + c["ver"] if c.get("ver") else ""} attribué par {who}'
+    if c.get("vec"):
+        tip += f' · {c["vec"]}'
+    txt = f'Sévérité {lab.lower()} · CVSS {c["score"]:.1f}' if long else f'CVSS {c["score"]:.1f} · {lab}'
+    return f'<span class="sev {cls}" title="{e(tip)}">{e(txt)}</span>'
+
+
+def sev_text(it: dict) -> str:
+    c = it.get("cvss")
+    if not c or not c.get("score"):
+        return ""
+    return f'CVSS {c["score"]:.1f} ({sev_label(c["score"])[0].lower()}{", v" + c["ver"] if c.get("ver") else ""}, source : {c.get("src") or "fiche CVE"})'
+
+
 def entry_id(it: dict) -> str:
     return it["cves"][0] if it["cves"] else (it["link"] or it["title"])
 
@@ -1432,6 +1561,8 @@ def merge_entries(items: list[dict]) -> list[dict]:
                 prim["summary"] = it["summary"]
             if not prim["playbook"] and it["playbook"]:
                 prim["playbook"] = it["playbook"]
+            if it.get("cvss") and (not prim.get("cvss") or it["cvss"]["score"] > prim["cvss"]["score"]):
+                prim["cvss"] = it["cvss"]
     return out
 
 
@@ -1500,7 +1631,7 @@ def item_row(it: dict, post: dict | None = None) -> str:
             extra.append(f'<span>échéance CISA le {e(due_fr(it["due"]))}</span>')
         return (f'<li {head_attrs}><article>'
                 f'<p class="pstamp"><time datetime="{(it["date"] or NOW).isoformat()}">{e(stamp_fr(it["date"]))}</time>{new}</p>'
-                f'<p class="pprio lv{lvl}">{md_inline(prio)}</p>'
+                f'<p class="pprio lv{lvl}">{md_inline(prio)}{sev_html(it, long=True)}</p>'
                 f'<div class="head"><h4 class="ptitle"><a class="t" href="{e(it["link"])}" target="_blank" rel="noopener">{e(title)}</a></h4></div>'
                 f'<div class="sum pbody">{post_body_html(post["md"])}</div>'
                 f'<div class="meta psrc"><span>Sources officielles :</span>{" · ".join(sources_links(it))}'
@@ -1511,7 +1642,7 @@ def item_row(it: dict, post: dict | None = None) -> str:
     src = (f'<a class="src" href="{e(site)}" target="_blank" rel="noopener">{e(it["source"])}</a>'
            if site else f'<span class="src">{e(it["source"])}</span>')
     iso = it["date"].isoformat() if it["date"] else ""
-    meta = [src, f'<time datetime="{iso}">{e(when(it["date"]))}</time>']
+    meta = [src, f'<time datetime="{iso}">{e(when(it["date"]))}</time>'] + ([sev_html(it)] if sev_html(it) else [])
     meta += [f'<span class="cve">{e(c)}</span>' for c in it["cves"][:3]]
     also = list(dict.fromkeys((a["source"], a["link"]) for a in it.get("also", []) if a["source"] != it["source"]))
     if also:
@@ -1641,7 +1772,7 @@ def md_inline(t: str) -> str:
 
 def detail_html(it: dict, post) -> str:
     """Fiche dépliable d'une alerte, affichée sous sa ligne dans le tableau du briefing."""
-    head = (f'<p class="dt-head"><span class="tag lv{it["level"]}">{LEVEL_TAG[it["level"]] or "Info"}</span>'
+    head = (f'<p class="dt-head"><span class="tag lv{it["level"]}">{LEVEL_TAG[it["level"]] or "Info"}</span>{sev_html(it)}'
             f'<a href="{e(it["link"])}" target="_blank" rel="noopener">{e((post or {}).get("title") or it["title"])}</a></p>')
     if post and post.get("md"):
         body = f'<div class="pbody">{md_to_html(post["md"])}</div>'
@@ -2135,7 +2266,7 @@ def ai_input(entries: list[dict], eol: list[dict], status_rows: list[dict]) -> s
         also = ", ".join(sorted({a["source"] for a in i.get("also", [])}))
         lines.append(f"- [{LEVEL_TAG[i['level']]}] {i['source']}{' (aussi : ' + also + ')' if also else ''} | "
                      f"{(i['date'] or NOW).astimezone(PARIS).strftime('%d/%m %H:%M')} | {i['title']} | "
-                     f"{', '.join(i['cves'][:4]) or '-'} | {i['summary'][:300]}"
+                     f"{', '.join(i['cves'][:4]) or '-'}{' | ' + sev_text(i) if sev_text(i) else ''} | {i['summary'][:300]}"
                      f"{' | Action CISA : ' + i['action'] if i['action'] else ''} | {i['link']}")
     lines.append("\n## Pages d'état des services (24 h)")
     for r in status_rows:
@@ -2330,6 +2461,7 @@ def post_prompt(it: dict) -> str:
              f"Date : {(it['date'] or NOW).astimezone(PARIS).strftime('%d/%m/%Y %H:%M')}",
              f"Titre : {it['title']}",
              f"CVE : {', '.join(it['cves']) or 'aucune citée'}",
+             f"Sévérité : {sev_text(it) or 'score CVSS non publié'}",
              f"Résumé : {it['summary']}"]
     if it["action"]:
         lines.append(f"Action demandée par la CISA : {it['action']} (échéance {it['due']})")
@@ -2591,7 +2723,7 @@ ARCHIVE_KEEP_DAYS = 90
 def arch_item(it: dict, post) -> dict:
     d = {"id": entry_id(it), "level": it["level"], "title": it["title"], "link": it["link"], "source": it["source"],
          "date": (it["date"] or NOW).isoformat(), "summary": it["summary"][:500], "cves": it["cves"][:6],
-         "playbook": it["playbook"], "rw": bool(it["ransomware"]),
+         "playbook": it["playbook"], "rw": bool(it["ransomware"]), "cvss": it.get("cvss"),
          "also": [[a["source"], a["link"]] for a in it.get("also", [])[:5]]}
     if post:
         d["post"] = {k: post[k] for k in ("prio", "title", "md") if k in post}
@@ -2603,6 +2735,7 @@ def from_arch(d: dict) -> tuple[dict, dict | None]:
           "date": parse_date(d.get("date", "")), "summary": d.get("summary", ""), "level": int(d.get("level", 1)),
           "playbook": d.get("playbook") if d.get("playbook") in PB_BY_ID else None, "cves": d.get("cves", []),
           "action": "", "due": "", "ransomware": bool(d.get("rw")),
+          "cvss": d["cvss"] if isinstance(d.get("cvss"), dict) and isinstance(d["cvss"].get("score"), (int, float)) else None,
           "also": [{"source": a[0], "link": safe_url(a[1]), "title": ""} for a in d.get("also", []) if len(a) == 2]}
     return it, d.get("post")
 
@@ -2855,6 +2988,11 @@ def main(out_dir: str = "_site") -> None:
     status_rows = collect_status()
     eol = collect_eol()
     news = collect_news() if INCLUDE_PRESS else []
+    try:   # avant le regroupement, pour que toutes les vues (accueil, articles, archives) aient le score
+        enrich_cvss(kev + cert + redhat + vendors + ghsa)
+    except Exception as ex:   # la sévérité est un plus : son absence ne bloque jamais le bulletin
+        STATUS.append(("Registre CVE (sévérité)", False, type(ex).__name__))
+        print(f"[!] Sévérité CVSS : {ex}")
     merged = merge_entries(kev + cert + redhat + vendors + ghsa + news)
     briefing = get_briefing(merged, eol, status_rows)
     posts = get_posts(merged, briefing)
