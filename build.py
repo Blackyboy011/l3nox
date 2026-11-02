@@ -24,6 +24,8 @@ import json
 import os
 import re
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -139,7 +141,7 @@ AI_MAX_ITEMS = 60
 AI_POSTS_PER_RUN = 12
 AI_POSTS_PER_DAY = 120   # garde-fous absolus ; en pratique c'est le budget de crédits qui décide
 AI_POSTS_PER_MONTH = 2500
-AI_POSTS_DAYS = 14      # on ne rédige que pour les alertes de moins de N jours (sauf si le briefing les cite)
+AI_POSTS_DAYS = 30      # on ne rédige que pour les alertes de moins de N jours (sauf si le briefing les cite)
 
 # Presse spécialisée : désactivée (seules les sources officielles alimentent le bulletin).
 INCLUDE_PRESS = False
@@ -166,6 +168,14 @@ NEWS_DROP = re.compile(
     r"|mod[èe]le (?:de langage|d.ia)|poids de son mod[èe]le|\bllm\b|chatbot",
     re.I)
 
+NVD_SITES_EARLY = {"Ivanti": "https://www.ivanti.com/blog/topics/security-advisory",
+                   "Citrix": "https://support.citrix.com/securitybulletins",
+                   "VMware": "https://support.broadcom.com/web/ecx/security-advisory",
+                   "Apple": "https://support.apple.com/fr-fr/100100",
+                   "Veeam": "https://www.veeam.com/knowledge-base.html?type=security",
+                   "Atlassian": "https://www.atlassian.com/trust/security/advisories",
+                   "SAP": "https://support.sap.com/en/my-support/knowledge-base/security-notes-news.html",
+                   "Microsoft Exchange": "https://msrc.microsoft.com/update-guide"}
 # Page d'accueil de chaque source (pour les liens et la section « Sources »)
 SOURCE_SITES = {
     "CISA KEV": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
@@ -184,6 +194,11 @@ SOURCE_SITES = {
     "Ubuntu": "https://ubuntu.com/security/notices",
     "Debian": "https://www.debian.org/security/",
     "Google Chrome": "https://chromereleases.googleblog.com/",
+    **NVD_SITES_EARLY,
+    "NVD (NIST)": "https://nvd.nist.gov/vuln/search",
+    "Registre CVE (sévérité)": "https://www.cve.org/",
+    "FIRST EPSS": "https://www.first.org/epss/",
+    "Exploits publics": "https://www.exploit-db.com/",
     "endoflife.date": "https://endoflife.date/",
     "BleepingComputer": "https://www.bleepingcomputer.com/",
     "The Hacker News": "https://thehackernews.com/",
@@ -195,6 +210,18 @@ SOURCE_SITES = {
 SOURCE_DESC = {
     "CISA KEV": "Catalogue américain des vulnérabilités activement exploitées",
     "CERT-FR alerte": "Alertes de l'ANSSI (menaces en cours)",
+    "Ivanti": "Failles Ivanti (Connect Secure, EPMM…) de score 7 ou plus, via la NVD",
+    "Citrix": "Failles Citrix / NetScaler de score 7 ou plus, via la NVD",
+    "VMware": "Failles VMware / Broadcom (ESXi, vCenter…) de score 7 ou plus, via la NVD",
+    "Apple": "Failles Apple (macOS, iOS, Safari) de score 7 ou plus, via la NVD",
+    "Veeam": "Failles Veeam de score 7 ou plus, via la NVD",
+    "Atlassian": "Failles Atlassian (Confluence, Jira…) de score 7 ou plus, via la NVD",
+    "SAP": "Failles SAP de score 7 ou plus, via la NVD",
+    "Microsoft Exchange": "Failles Microsoft Exchange de score 7 ou plus, via la NVD",
+    "NVD (NIST)": "Base américaine des vulnérabilités, interrogée toutes les 6 h pour les éditeurs ci-dessus",
+    "Registre CVE (sévérité)": "Score CVSS officiel de chaque faille (éditeur ou CISA)",
+    "FIRST EPSS": "Probabilité qu'une faille soit exploitée dans les 30 prochains jours",
+    "Exploits publics": "Codes d'attaque publiés (Exploit-DB, PoC-in-GitHub, CISA)",
     "CERT-FR avis": "Avis de sécurité de l'ANSSI (couvre aussi Juniper, Veeam, VMware, Apple, Ivanti…)",
     "Red Hat": "CVE de sévérité critique publiées par Red Hat",
     "GitHub Advisory": "Failles critiques des logiciels open source (avec versions corrigées)",
@@ -473,9 +500,14 @@ for _pb in PLAYBOOKS:
 PB_BY_ID = {pb["id"]: pb for pb in PLAYBOOKS}
 
 GENERIC_STEPS = [
-    "Vérifier si le produit et la version concernés sont présents dans votre parc.",
-    "Appliquer le correctif de l'éditeur (ou le contournement indiqué dans l'avis s'il n'y en a pas encore).",
-    "Si la vulnérabilité est exploitée : rechercher des traces de compromission dans les journaux.",
+    "Inventorier : vérifier si le produit et la version concernés sont présents dans le parc (serveurs, postes, "
+    "conteneurs, équipements), y compris les instances oubliées.",
+    "Évaluer l'exposition : le service est-il joignable depuis Internet ou par des utilisateurs non administrateurs ?",
+    "Corriger : appliquer la version corrigée de l'éditeur ; à défaut, le contournement indiqué dans l'avis "
+    "(désactiver la fonction, restreindre l'accès, filtrer le flux).",
+    "Limiter en attendant : restreindre l'accès aux interfaces d'administration (VPN, liste d'adresses autorisées).",
+    "Surveiller : rechercher dans les journaux des traces d'exploitation (connexions inhabituelles, erreurs, nouveaux "
+    "comptes ou fichiers) et vérifier que le correctif est bien appliqué partout.",
 ]
 
 # ═════════════════════════ Outils ═════════════════════════
@@ -998,6 +1030,55 @@ pre{font-size:13px}
 """.replace("%DARK%", DARK_TOKENS)
 
 CSS_EXTRA = """
+.fb-tab{border-collapse:collapse;margin:8px 0 12px;font-size:15px;width:100%}
+.fb-tab th{text-align:left;font-weight:600;color:var(--muted);padding:5px 12px 5px 0;vertical-align:top;white-space:nowrap;width:1%}
+.fb-tab td{padding:5px 0;border-top:1px solid var(--rule)}.fb-tab tr:first-child td{border-top:0}
+.more-fb h4{margin:12px 0 4px;font-size:15.5px}.fb-src{font-size:14.5px}.fb-wait{font-size:14px;color:var(--muted);font-style:italic}
+@media (max-width:700px){.fb-tab th{white-space:normal;width:38%}}
+
+/* Risque : EPSS et exploit public */
+.risk,.xpl{display:inline-block;font:700 12.5px/1.5 var(--body);border-radius:5px;padding:0 7px;margin:0 6px;white-space:nowrap;
+color:var(--rc);background:color-mix(in srgb,var(--rc) 11%,transparent);border:1px solid color-mix(in srgb,var(--rc) 32%,transparent)}
+.risk.r3{--rc:var(--p1)}.risk.r2{--rc:var(--p2)}.risk.r1{--rc:var(--muted)}
+.xpl{--rc:var(--p1);text-decoration:none}.xpl::before{content:"⚠ "}a.xpl:hover{text-decoration:underline}
+.meta .risk,.meta .xpl{margin:0}.pprio .risk,.pprio .xpl{vertical-align:2px;margin-left:6px}
+/* Mon suivi */
+.perso{margin:26px 0 8px}
+.suivi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.tile{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;cursor:pointer;
+background:var(--sheet);border:1px solid var(--rule);border-radius:12px;padding:12px 14px;color:var(--ink);font:inherit}
+.tile:hover{border-color:var(--link)}
+.tile .tn{font:800 26px/1.1 var(--display)}.tile .tl{font:600 14px/1.3 var(--body)}
+.tile .ts{font-size:13px;color:var(--muted);line-height:1.35;min-height:1.35em}
+.tile.alert .tn{color:var(--p1)}.tile.warn .tn{color:var(--p2)}.tile.good .tn{color:var(--ok)}
+/* Mon parc */
+details.parc,details.agbox{margin-top:10px;background:var(--sheet);border:1px solid var(--rule);border-radius:12px;padding:0 16px}
+details.parc>summary,details.agbox>summary{cursor:pointer;padding:12px 0;font-weight:700}
+details.parc>summary span#parcsum,details.agbox>summary span{font-weight:400;color:var(--muted);margin-left:8px;font-size:15px}
+.parc-t{color:var(--link)}
+.parc-help{font-size:15px;color:var(--muted);margin:0 0 10px}
+.parc-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:4px 18px;padding-bottom:6px}
+.parc fieldset{border:0;margin:0 0 8px;padding:0}.parc legend{font:700 13px/1.4 var(--body);text-transform:uppercase;
+letter-spacing:.04em;color:var(--muted);padding:0;margin-bottom:4px}
+.chip{display:inline-flex;align-items:center;gap:6px;margin:0 6px 6px 0;padding:4px 10px;border:1px solid var(--rule);
+border-radius:999px;font-size:14.5px;cursor:pointer;user-select:none}
+.chip input{accent-color:var(--link);margin:0}
+.chip:has(input:checked){border-color:var(--link);background:color-mix(in srgb,var(--link) 10%,transparent)}
+.parc-code{font-size:14px;color:var(--muted);margin:4px 0 14px}.parc-code code{font:13px var(--mono);word-break:break-all}
+.copy2{font:600 13px var(--body);border:1px solid var(--rule);background:var(--paper);color:var(--ink);border-radius:6px;padding:2px 8px;cursor:pointer}
+.f.fparc{--lvc:var(--link)}
+.inparc-tag{display:inline-block;font:700 12px/1.5 var(--body);color:var(--link);border:1px solid color-mix(in srgb,var(--link) 40%,transparent);
+border-radius:5px;padding:0 6px}
+/* Agenda */
+.agenda ul{list-style:none;margin:0;padding:0}
+.agenda li{display:grid;grid-template-columns:150px 1fr;gap:4px 12px;padding:6px 0;border-top:1px solid var(--rule);font-size:15.5px}
+.agenda li:first-child{border-top:0}
+.agenda time{color:var(--muted);font-size:14px;white-space:nowrap}
+.agenda .ag-due a{color:var(--p1);font-weight:600}.agenda .ag-eol a{color:var(--p2)}
+.ag-foot{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:14px;margin:6px 0 12px}
+@media (max-width:700px){.suivi{grid-template-columns:repeat(2,minmax(0,1fr))}.agenda li{grid-template-columns:1fr}
+.tile .tn{font-size:22px}.parc-grid{grid-template-columns:1fr}}
+
 /* Barre de filtres */
 .tools{position:sticky;top:0;z-index:10;background:var(--paper);padding:14px 0 12px;border-bottom:1px solid var(--rule)}
 .filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 10px;padding:0}
@@ -1184,9 +1265,15 @@ var KEY='l3nox:etat',store={};
 try{store=JSON.parse(localStorage.getItem(KEY)||'{}')||{}}catch(_){store={}}
 function saveLocal(){try{localStorage.setItem(KEY,JSON.stringify(store))}catch(_){}}
 function save(){saveLocal();push()}
-(function(){var lim=Date.now()-150*864e5;Object.keys(store).forEach(function(id){if(!store[id]||!(store[id].t>=lim))delete store[id]})})();
+(function(){var lim=Date.now()-150*864e5,old=Date.now()-60*864e5,ch=false;Object.keys(store).forEach(function(id){
+  if(id.indexOf('parc:')===0&&store[id]&&store[id].s&&store[id].t<old){store[id].t=Date.now();ch=true}  /* le parc ne s'efface jamais tout seul */
+  if(!store[id]||!(store[id].t>=lim))delete store[id]});if(ch)saveLocal()})();
+function parcIds(){return Object.keys(store).filter(function(k){return k.indexOf('parc:')===0&&store[k]&&store[k].s==='done'}).map(function(k){return k.slice(5)})}
 var LV={p1:'3',p2:'2',p3:'1',news:'0'};
-var EMPTY={all:'Tout est traité ou écarté. Rien d’autre à faire pour le moment.',
+var TODAY=document.body.dataset.day;
+function dueSoon(r){var d=r.dataset.due;if(!d)return false;return (new Date(d)-new Date(TODAY))/864e5<=7}
+function inParc(r){var p=parcIds();if(!p.length)return false;var t=(r.dataset.tech||'').split(' ');return p.some(function(x){return t.indexOf(x)>=0})}
+var EMPTY={late:'Aucune échéance CISA dans les 7 prochains jours.',all:'Tout est traité ou écarté. Rien d’autre à faire pour le moment.',
   p1:'Aucune faille exploitée en attente.',p2:'Aucune faille critique en attente.',p3:'Aucun avis à surveiller en attente.',
   news:'Aucune actualité en attente.',done:'Aucune alerte validée pour l’instant.',hidden:'Aucune alerte écartée.'};
 var view='all',terms=[];
@@ -1198,12 +1285,14 @@ function st(r){var s=store[r.dataset.id];return s?s.s:''}
 function inView(r,v){var s=st(r);
   if(v==='done'||v==='hidden')return s===v;
   if(s)return false;
+  if(v==='parc')return inParc(r);
+  if(v==='late')return r.dataset.lv==='3'&&dueSoon(r);
   return v==='all'||r.dataset.lv===LV[v]}
 function fmt(t){var d=new Date(t);return d.toLocaleDateString('fr-FR',{day:'2-digit',month:'2-digit'})+' à '+d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}
 var clearBtn=document.getElementById('clear'),qc=document.getElementById('qcount'),empty=document.getElementById('viewempty');
 
 function paint(){
-  var shown=0;
+  var shown=0;parcUI();
   rows.forEach(function(r){
     var ok=inView(r,view)&&terms.every(function(t){return r.dataset.s.indexOf(t)>=0});
     r.hidden=!ok;if(ok)shown++;
@@ -1213,7 +1302,11 @@ function paint(){
     var lab=a.querySelector('.state-lab');
     lab.className='state-lab '+(s==='done'?'done-at':s==='hidden'?'hid-at':'');
     lab.textContent=s==='done'?'Validée le '+fmt(store[r.dataset.id].t):s==='hidden'?'Écartée le '+fmt(store[r.dataset.id].t):'';
+    var ip=inParc(r),m=r.querySelector('.meta'),tg=m&&m.querySelector('.inparc-tag');r.classList.toggle('inparc',ip);
+    if(ip&&!tg&&m){tg=document.createElement('span');tg.className='inparc-tag';tg.textContent='Mon parc';m.insertBefore(tg,m.firstChild)}
+    if(!ip&&tg)tg.remove();
   });
+  suivi();
   document.querySelectorAll('#fil .lvblock').forEach(function(b){
     var n=b.querySelectorAll('.row:not([hidden])').length;b.hidden=!n;
     b.querySelector('.n').textContent=n+' élément'+(n>1?'s':'')});
@@ -1221,14 +1314,15 @@ function paint(){
   var mode=view+'|'+terms.join(' ');
   if(mode!==lastMode){document.querySelectorAll('#fil details.dayfold').forEach(function(d){d.open=(view!=='all'||terms.length>0)});
     document.querySelectorAll('#fil details.lvfold').forEach(function(d){d.open=(view==='p3'||view==='done'||view==='hidden'||terms.length>0)});
-    var full=(view==='p1'||view==='p2');  /* onglets P1/P2 : solutions visibles sans clic */
+    var full=(view==='p1'||view==='p2'||view==='p3'||view==='parc');  /* onglets P1, P2, P3, Mon parc : solutions visibles sans clic */
     document.querySelectorAll('#fil .row details.more, #fil .row details.todo-in').forEach(function(d){d.open=full});lastMode=mode}
-  ['all','p1','p2','p3','news','done','hidden'].forEach(function(v){
+  ['all','parc','p1','p2','p3','news','done','hidden','late'].forEach(function(v){
     var c=rows.filter(function(r){return inView(r,v)}).length;
     var b=document.querySelector('.f[data-v="'+v+'"]');if(b){b.querySelector('b').textContent=c;b.setAttribute('aria-pressed',v===view)}});
   qc.textContent=terms.length?(shown+' résultat'+(shown>1?'s':'')):'';
   empty.hidden=shown>0;
-  empty.textContent=terms.length?'Aucun résultat pour cette recherche dans cette vue.':EMPTY[view];
+  empty.textContent=terms.length?'Aucun résultat pour cette recherche dans cette vue.':view==='parc'?(parcIds().length?
+    'Aucune alerte en attente pour votre parc.':'Votre parc n’est pas encore configuré : ouvrez « Mon parc » ci-dessus et cochez vos technologies.'):EMPTY[view];
   var restore=view==='done'||view==='hidden';
   clearBtn.textContent=restore?'Tout remettre dans la liste':'Vider la liste';
   clearBtn.title=restore?'Remettre toutes ces alertes dans la liste active':'Écarter toutes les alertes affichées';
@@ -1265,7 +1359,42 @@ q.addEventListener('input',function(){terms=norm(q.value).split(/\s+/).filter(Bo
 document.addEventListener('keydown',function(ev){
   if(ev.key==='/'&&document.activeElement!==q){ev.preventDefault();q.focus()}
   if(ev.key==='Escape'&&document.activeElement===q){q.value='';terms=[];paint()}});
-var h=location.hash.slice(1);if(LV[h]||h==='done'||h==='hidden')view=h;
+var h=location.hash.slice(1);if(LV[h]||h==='done'||h==='hidden'||h==='parc'||h==='late')view=h;
+if(view==='parc'&&!parcIds().length){var pd=document.getElementById('parc');if(pd)pd.open=true}
+
+/* Mon parc : technologies cochées par ce visiteur (synchronisées avec son code personnel) */
+var parcBox=document.getElementById('parc');
+function parcUI(){if(!parcBox)return;var ids=parcIds(),names=[];
+  parcBox.querySelectorAll('input[type=checkbox]').forEach(function(cb){cb.checked=ids.indexOf(cb.value)>=0;
+    if(cb.checked)names.push(cb.nextElementSibling.textContent)});
+  var n=rows.filter(function(r){return !st(r)&&inParc(r)}).length,sum=document.getElementById('parcsum');
+  sum.textContent=ids.length?(names.slice(0,4).join(', ')+(names.length>4?' et '+(names.length-4)+' autre(s)':'')+' · '+
+    n+' alerte'+(n>1?'s':'')+' en attente'):'non configuré : cochez vos technologies pour ne voir que ce qui vous concerne';
+  var code=document.getElementById('parccode');if(code){code.hidden=!(syncCode&&ids.length);document.getElementById('parcids').textContent=ids.join(',')}}
+if(parcBox){parcBox.addEventListener('change',function(ev){var cb=ev.target;if(!cb.matches('input[type=checkbox]'))return;
+  store['parc:'+cb.value]={s:cb.checked?'done':'',t:Date.now()};save();paint()});
+  document.getElementById('parccopy').addEventListener('click',function(){var b=this,t=document.getElementById('parcids').textContent;
+    (navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(function(){b.textContent='Copié'},function(){b.textContent='Sélectionnez le texte'});
+    setTimeout(function(){b.textContent='Copier'},1600)})}
+
+/* Mon suivi : ce qui reste ouvert, les retards et ce qui a été traité (choix de ce visiteur) */
+var oldestRow=null;
+function setTile(id,n,sub,cls){var a=document.getElementById(id),b=document.getElementById(id+'s');if(!a)return;
+  a.textContent=n;b.textContent=sub||'';a.parentElement.className='tile '+(cls||'')}
+function suivi(){if(!document.getElementById('suivi'))return;var now=Date.now();
+  var p1=rows.filter(function(r){return r.dataset.lv==='3'&&!st(r)});
+  var mine=p1.filter(inParc).length,hasP=parcIds().length>0;
+  setTile('s-p1',p1.length,hasP?mine+' dans mon parc':'à traiter',p1.length?'alert':'good');
+  oldestRow=null;var od=0;p1.forEach(function(r){var d=(now-new Date(r.dataset.date))/864e5;if(d>od){od=d;oldestRow=r}});
+  setTile('s-old',oldestRow?Math.floor(od)+' j':'–',oldestRow?oldestRow.querySelector('.t').textContent.slice(0,48):'aucune',od>=7?'alert':od>=3?'warn':'good');
+  var over=p1.filter(function(r){return r.dataset.due&&r.dataset.due<TODAY}).length,soon=p1.filter(dueSoon).length;
+  setTile('s-late',soon,over?over+' dépassée(s)':soon?'dans les 7 jours':'aucune proche',over?'alert':soon?'warn':'good');
+  var wk=now-7*864e5,dn=0,hd=0;Object.keys(store).forEach(function(k){var v=store[k];if(k.indexOf('parc:')===0||!v||v.t<wk)return;
+    if(v.s==='done')dn++;else if(v.s==='hidden')hd++});
+  setTile('s-done',dn,hd+' écartée'+(hd>1?'s':''),dn?'good':'')}
+document.querySelectorAll('.tile').forEach(function(t){t.addEventListener('click',function(){var g=t.dataset.go;
+  if(g==='oldest'){if(oldestRow)reveal('#'+oldestRow.id);return}
+  view=g;try{history.replaceState(null,'',g==='all'?location.pathname:'#'+g)}catch(_){}paint();document.getElementById('fil').scrollIntoView()})});
 paint();
 
 /* Synchronisation personnelle entre appareils (code personnel, facultatif) */
@@ -1448,6 +1577,14 @@ def sev_label(score: float) -> tuple[str, str]:
 def parse_cve_record(data: dict) -> dict | None:
     """Meilleur score CVSS d'une fiche CVE 5.x : celui de l'éditeur (CNA), sinon celui de la CISA (ADP)."""
     cont = (data or {}).get("containers") or {}
+    ssvc = ""
+    for a in cont.get("adp") or []:
+        for m in a.get("metrics") or []:
+            o = (m or {}).get("other") or {}
+            if str(o.get("type", "")).lower() == "ssvc":
+                for opt in ((o.get("content") or {}).get("options") or []):
+                    if isinstance(opt, dict) and "Exploitation" in opt:
+                        ssvc = str(opt["Exploitation"]).lower()
     blocks = [("éditeur", (cont.get("cna") or {}).get("metrics") or [])]
     for a in cont.get("adp") or []:
         who = ((a.get("providerMetadata") or {}).get("shortName") or "ADP").replace("-ADP", "")
@@ -1464,8 +1601,8 @@ def parse_cve_record(data: dict) -> dict | None:
                         pass
         if found:  # on préfère la version la plus récente (4.0, puis 3.1, 3.0, 2.0)
             ver, score, vec = max(found, key=lambda f: (str(f[0]), f[1]))
-            return {"score": score, "ver": str(ver), "vec": vec, "src": who}
-    return None
+            return {"score": score, "ver": str(ver), "vec": vec, "src": who, "ssvc": ssvc}
+    return {"ssvc": ssvc} if ssvc else None
 
 
 def fetch_cvss(cve: str) -> dict | None:
@@ -1500,10 +1637,13 @@ def enrich_cvss(entries: list[dict]) -> None:
                 got = fetch_cvss(cve)
                 if got is not None:
                     cache[cve] = dict(got, t=now_s)
+    rank = {"active": 2, "poc": 1}
     for it in entries:
         best = dict(it["cvss"]) if it.get("cvss") else None
         for cve in it["cves"][:3]:
             c = cache.get(cve) or {}
+            if rank.get(c.get("ssvc", ""), 0) > rank.get(it.get("ssvc", ""), 0):
+                it["ssvc"] = c["ssvc"]
             if c.get("score") and (not best or c["score"] > best["score"] or best.get("src") in ("GitHub", "Red Hat")):
                 best = {k: c[k] for k in ("score", "ver", "vec", "src") if k in c}
         if best:
@@ -1538,6 +1678,476 @@ def sev_text(it: dict) -> str:
     return f'CVSS {c["score"]:.1f} ({sev_label(c["score"])[0].lower()}{", v" + c["ver"] if c.get("ver") else ""}, source : {c.get("src") or "fiche CVE"})'
 
 
+# ═════════════════════ « Mon parc » : technologies suivies ═════════════════════
+# Chaque visiteur coche ses technologies (mémorisé dans son navigateur ; synchronisé entre les appareils du
+# propriétaire avec son code). Le site repère dans chaque alerte les technologies concernées.
+# (id, libellé, expression recherchée, sources rattachées)
+PARC = [
+    ("Systèmes", [
+        ("rhel", "Red Hat / Rocky / Alma", r"red ?hat|\brhel\b|rocky ?linux|almalinux|centos|fedora", ["Red Hat"]),
+        ("debian", "Debian / Ubuntu", r"debian|ubuntu", ["Debian", "Ubuntu"]),
+        ("kernel", "Noyau Linux", r"linux kernel|noyau linux|kernel linux|\blinux\b.{0,20}\bkernel\b", []),
+        ("windows", "Windows / Windows Server", r"windows", []),
+        ("apple", "Apple (macOS, iOS)", r"\bapple\b|mac ?os|\bios\b(?! xe| xr)|ipados|safari|webkit", ["Apple"]),
+    ]),
+    ("Annuaire et messagerie", [
+        ("ad", "Active Directory / Kerberos", r"active directory|kerberos|\bkrb5\b|netlogon|contr[ôo]leur de domaine|domain controller|\bldap\b", []),
+        ("samba", "Samba / Winbind / SSSD", r"samba|winbind|\bsssd\b", []),
+        ("exchange", "Microsoft Exchange", r"exchange server|microsoft exchange", ["Microsoft Exchange"]),
+        ("m365", "Microsoft 365 / Office", r"microsoft (?:office|365)|\boffice\b|outlook|sharepoint|\bteams\b|\bword\b|\bexcel\b", []),
+    ]),
+    ("Réseau et sécurité", [
+        ("fortinet", "Fortinet", r"fortinet|forti(?:os|gate|web|manager|analyzer|client|proxy|switch|siem|sandbox|mail|voice)", ["Fortinet PSIRT"]),
+        ("paloalto", "Palo Alto", r"palo ?alto|pan-os|globalprotect|prisma", ["Palo Alto"]),
+        ("cisco", "Cisco", r"\bcisco\b", ["Cisco PSIRT"]),
+        ("ivanti", "Ivanti", r"ivanti|connect secure|pulse secure|policy secure|endpoint manager mobile|\bepmm\b", ["Ivanti"]),
+        ("citrix", "Citrix / NetScaler", r"citrix|netscaler", ["Citrix"]),
+        ("sonicwall", "SonicWall", r"sonicwall|sonicos", []),
+        ("juniper", "Juniper", r"juniper|junos", []),
+        ("openssh", "OpenSSH", r"openssh", []),
+        ("openssl", "OpenSSL", r"openssl", []),
+    ]),
+    ("Virtualisation et sauvegarde", [
+        ("vmware", "VMware / Broadcom", r"vmware|esxi|vcenter|vsphere|\bnsx\b", ["VMware"]),
+        ("proxmox", "Proxmox", r"proxmox", []),
+        ("hyperv", "Hyper-V", r"hyper-v", []),
+        ("veeam", "Veeam", r"veeam", ["Veeam"]),
+        ("k8s", "Kubernetes", r"kubernetes|\bk8s\b|kubelet|ingress-nginx", ["Kubernetes"]),
+        ("docker", "Docker / conteneurs", r"docker|containerd|\brunc\b|podman", []),
+    ]),
+    ("Web, applications et données", [
+        ("apache", "Apache HTTP Server", r"apache http|\bhttpd\b|apache2|mod_\w+", []),
+        ("nginx", "nginx", r"nginx", []),
+        ("php", "PHP", r"\bphp\b", []),
+        ("java", "Java / Tomcat / Spring", r"\bjava\b|\bjdk\b|tomcat|spring|log4j|jboss|wildfly", []),
+        ("cms", "WordPress / Drupal / Joomla", r"wordpress|drupal|joomla", []),
+        ("atlassian", "Atlassian (Jira, Confluence)", r"atlassian|confluence|\bjira\b|bitbucket", ["Atlassian"]),
+        ("gitlab", "GitLab / Jenkins", r"gitlab|jenkins", ["GitLab"]),
+        ("sap", "SAP", r"\bsap\b|netweaver", ["SAP"]),
+        ("db", "Bases de données", r"postgres|mysql|mariadb|oracle database|sql server|mongodb|redis|elasticsearch", []),
+    ]),
+    ("Postes et cloud", [
+        ("chrome", "Chrome / Edge", r"chrome|chromium|microsoft edge", ["Google Chrome"]),
+        ("firefox", "Firefox / Thunderbird", r"firefox|thunderbird", []),
+        ("aws", "AWS", r"\baws\b|amazon", ["AWS"]),
+        ("azure", "Azure / Entra ID", r"azure|entra", []),
+    ]),
+]
+PARC_RE = {tid: re.compile(rx, re.I) for _, techs in PARC for tid, _, rx, _ in techs}
+PARC_SRC = {tid: set(srcs) for _, techs in PARC for tid, _, _, srcs in techs}
+PARC_LABEL = {tid: lab for _, techs in PARC for tid, lab, _, _ in techs}
+# Technologies du propriétaire, pour les notifications (variable GitHub L3NOX_PARC, ex. « rhel,samba,windows »)
+MY_PARC = [t for t in re.split(r"[\s,;]+", os.environ.get("L3NOX_PARC", "").lower()) if t in PARC_RE]
+
+
+def techs_of(it: dict) -> list[str]:
+    """Technologies repérées dans une alerte (titre, résumé, sources, avis liés)."""
+    sources = {it["source"]} | {a.get("source", "") for a in it.get("also", [])}
+    text = " ".join([it["title"], it["summary"], it.get("action", "")]
+                    + [a.get("title", "") for a in it.get("also", [])])
+    return [tid for tid, rx in PARC_RE.items() if (PARC_SRC[tid] & sources) or rx.search(text)]
+
+
+def in_my_parc(it: dict) -> bool:
+    return bool(MY_PARC) and bool(set(techs_of(it)) & set(MY_PARC))
+
+
+def parc_panel_html() -> str:
+    groups = "".join(
+        f'<fieldset><legend>{e(g)}</legend>' + "".join(
+            f'<label class="chip"><input type="checkbox" value="{tid}"><span>{e(lab)}</span></label>'
+            for tid, lab, _, _ in techs) + "</fieldset>" for g, techs in PARC)
+    return ('<details class="parc" id="parc"><summary><span class="parc-t">Mon parc</span>'
+            '<span id="parcsum">non configuré : cochez vos technologies pour ne voir que ce qui vous concerne</span></summary>'
+            '<p class="parc-help">Cochez les technologies que vous utilisez. L\'onglet <b>Mon parc</b> ne montre alors que les '
+            'alertes qui les concernent. Vos choix restent dans ce navigateur (et vous suivent sur vos appareils si la '
+            'synchronisation est activée) : chaque visiteur a son propre parc.</p>'
+            f'<div class="parc-grid">{groups}</div>'
+            '<p class="parc-code" id="parccode" hidden>Pour recevoir sur le téléphone les alertes de votre parc, '
+            'copiez ce code dans la variable GitHub <code>L3NOX_PARC</code> : <code id="parcids"></code> '
+            '<button class="copy2" type="button" id="parccopy">Copier</button></p></details>')
+
+
+# ═════════════════════ Risque d'exploitation : EPSS et exploit public ═════════════════════
+# EPSS (FIRST.org) : probabilité qu'une faille soit exploitée dans les 30 jours. Gratuit, mis à jour chaque jour.
+# Exploit public : code d'attaque publié (Exploit-DB, dépôts GitHub recensés par PoC-in-GitHub, ou avis de la CISA).
+EPSS_URL = "https://api.first.org/data/v1/epss?cve={cves}"
+EPSS_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "epss.json")
+EXPLOIT_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "exploits.json")
+EXPLOITDB_CSV = "https://gitlab.com/exploit-database/exploitdb/-/raw/main/files_exploits.csv"
+POC_GITHUB = "https://raw.githubusercontent.com/nomi-sec/PoC-in-GitHub/master/{y}/{cve}.json"
+POC_PER_RUN = 40
+
+
+def _load(path: str) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+            return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save(path: str, data) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+
+def risk_cves(items: list[dict]) -> list[str]:
+    wanted = sorted((i for i in items if i["level"] >= WATCH and i["cves"]),
+                    key=lambda i: (-i["level"], -(i["date"].timestamp() if i["date"] else 0)))
+    return list(dict.fromkeys(c for i in wanted for c in i["cves"][:3]))
+
+
+def enrich_epss(items: list[dict]) -> None:
+    cache, now_s = _load(EPSS_FILE), NOW.timestamp()
+    todo = [c for c in risk_cves(items) if now_s - cache.get(c, {}).get("t", 0) > 20 * 3600]
+    asked = 0
+    for k in range(0, min(len(todo), 300), 60):   # par lots de 60 CVE
+        batch = todo[k:k + 60]
+        data = json.loads(fetch(EPSS_URL.format(cves=",".join(batch)), timeout=20))
+        got = {d.get("cve", "").upper(): d for d in data.get("data") or []}
+        for c in batch:
+            d = got.get(c)
+            cache[c] = {"t": now_s, "p": float(d["epss"]), "pc": float(d.get("percentile") or 0)} if d else {"t": now_s}
+        asked += len(batch)
+    for it in items:
+        best = max((cache[c] for c in it["cves"][:3] if cache.get(c, {}).get("p") is not None),
+                   key=lambda d: d["p"], default=None)
+        if best:
+            it["epss"] = {"p": best["p"], "pc": best["pc"]}
+    _save(EPSS_FILE, {k: v for k, v in cache.items() if now_s - v.get("t", 0) < 60 * 86400})
+    n = sum(1 for i in items if i.get("epss"))
+    STATUS.append(("FIRST EPSS", True, f"{n} alerte(s) évaluée(s)"))
+    print(f"[ok] EPSS : {n} alerte(s) évaluée(s), {asked} CVE interrogée(s).")
+
+
+def exploitdb_index(cache: dict) -> dict:
+    """Index CVE -> numéro Exploit-DB, rafraîchi une fois par jour."""
+    idx = cache.get("edb") or {}
+    if NOW.timestamp() - cache.get("edb_t", 0) < 20 * 3600 and idx:
+        return idx
+    import csv
+    import io
+    raw = fetch(EXPLOITDB_CSV, timeout=60).decode("utf-8", "replace")
+    new = {}
+    for row in csv.DictReader(io.StringIO(raw)):
+        for c in CVE_RE.findall(row.get("codes") or ""):
+            new.setdefault(c.upper(), row.get("id"))
+    if len(new) > 1000:   # garde-fou : un fichier tronqué ne remplace pas l'index précédent
+        cache["edb"], cache["edb_t"] = new, NOW.timestamp()
+        idx = new
+    return idx
+
+
+def enrich_exploits(items: list[dict]) -> None:
+    cache, now_s = _load(EXPLOIT_FILE), NOW.timestamp()
+    poc = cache.setdefault("poc", {})
+    edb_ok = True
+    try:
+        edb = exploitdb_index(cache)
+    except Exception as ex:
+        edb, edb_ok = cache.get("edb") or {}, False
+        print(f"[!] Exploit-DB : {type(ex).__name__}")
+    asked = 0
+    for c in risk_cves(items):
+        if c in poc and now_s - poc[c].get("t", 0) < 20 * 3600:
+            continue
+        if asked >= POC_PER_RUN:
+            break
+        asked += 1
+        try:
+            repos = json.loads(fetch(POC_GITHUB.format(y=c.split("-")[1], cve=c), timeout=12))
+            repos = sorted((r for r in repos if isinstance(r, dict) and safe_url(r.get("html_url"))),
+                           key=lambda r: -(r.get("stargazers_count") or 0))
+            poc[c] = {"t": now_s, "url": repos[0]["html_url"], "n": len(repos)} if repos else {"t": now_s}
+        except urllib.error.HTTPError as ex:
+            if ex.code == 404:
+                poc[c] = {"t": now_s}
+        except Exception:
+            pass
+    for it in items:
+        best = None
+        for c in it["cves"][:3]:
+            if c in edb:
+                best = {"src": "Exploit-DB", "url": f"https://www.exploit-db.com/exploits/{edb[c]}"}
+                break
+            p = poc.get(c) or {}
+            if p.get("url"):
+                best = {"src": "GitHub", "url": p["url"], "n": p.get("n", 1)}
+                break
+        if not best and it.get("ssvc") == "poc":
+            best = {"src": "CISA", "url": ""}
+        if best:
+            it["exploit"] = best
+    cache["poc"] = {k: v for k, v in poc.items() if now_s - v.get("t", 0) < 60 * 86400}
+    _save(EXPLOIT_FILE, cache)
+    n = sum(1 for i in items if i.get("exploit"))
+    STATUS.append(("Exploits publics", True, f"{n} alerte(s) avec exploit public" + ("" if edb_ok else " (Exploit-DB indisponible)")))
+    print(f"[ok] Exploits publics : {n} alerte(s), {asked} CVE vérifiée(s) sur GitHub, index Exploit-DB {len(edb)} CVE.")
+
+
+def epss_html(it: dict) -> str:
+    d = it.get("epss")
+    if not d:
+        return ""
+    p = d["p"] * 100
+    cls = "r3" if p >= 50 else "r2" if p >= 10 else "r1"
+    txt = f"{p:.0f} %" if p >= 1 else "< 1 %"
+    tip = (f"EPSS (FIRST.org) : {p:.1f} % de probabilité d'exploitation dans les 30 prochains jours ; "
+           f"plus élevé que {d['pc'] * 100:.0f} % des failles connues")
+    return f'<span class="risk {cls}" title="{e(tip)}">Risque d\'exploitation {e(txt)}</span>'
+
+
+def exploit_html(it: dict) -> str:
+    x = it.get("exploit")
+    if not x:
+        return ""
+    tip = {"Exploit-DB": "Code d'exploitation publié sur Exploit-DB",
+           "GitHub": f"Preuve de concept publiée sur GitHub ({x.get('n', 1)} dépôt(s) recensé(s))",
+           "CISA": "La CISA indique qu'une preuve de concept est publique"}.get(x["src"], "")
+    if x.get("url"):
+        return (f'<a class="xpl" href="{e(x["url"])}" target="_blank" rel="noopener nofollow" title="{e(tip)}">'
+                f'Exploit public</a>')
+    return f'<span class="xpl" title="{e(tip)}">Exploit public</span>'
+
+
+def risk_text(it: dict) -> str:
+    out = []
+    if it.get("epss"):
+        out.append(f"EPSS {it['epss']['p'] * 100:.0f} % (probabilité d'exploitation à 30 jours)")
+    if it.get("exploit"):
+        out.append(f"exploit public disponible ({it['exploit']['src']})")
+    return " ; ".join(out)
+
+
+# ═════════════════════ Éditeurs suivis via la base NVD ═════════════════════
+# Ivanti, Citrix, VMware, Apple, Veeam, Atlassian, SAP, Exchange : pas de flux RSS fiable chez ces éditeurs,
+# on interroge la base publique NVD (NIST) par mot-clé, toutes les 6 heures. P2 si score ≥ 9, P3 si ≥ 7.
+NVD_URL = ("https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch={kw}&noRejected"
+           "&pubStartDate={start}&pubEndDate={end}&resultsPerPage=200")
+NVD_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "nvd_vendors.json")
+NVD_EVERY_HOURS = 6
+NVD_DAYS = 5
+NVD_VENDORS = [  # (source affichée, mot-clé NVD, filtre sur la description)
+    ("Ivanti", "Ivanti", r"ivanti"),
+    ("Citrix", "Citrix", r"citrix|netscaler"),
+    ("Citrix", "NetScaler", r"netscaler"),
+    ("VMware", "VMware", r"vmware|esxi|vcenter"),
+    ("Apple", "macOS", r"macos|ios|ipados|safari|visionos|watchos"),
+    ("Veeam", "Veeam", r"veeam"),
+    ("Atlassian", "Atlassian", r"atlassian|confluence|jira|bitbucket|bamboo"),
+    ("SAP", "SAP", r"\bsap\b|netweaver"),
+    ("Microsoft Exchange", "Exchange Server", r"exchange server"),
+]
+NVD_SITES = NVD_SITES_EARLY
+
+
+def nvd_score(cve: dict):
+    best = None
+    for key in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30"):
+        for m in (cve.get("metrics") or {}).get(key) or []:
+            d = m.get("cvssData") or {}
+            try:
+                sc = float(d.get("baseScore"))
+            except (TypeError, ValueError):
+                continue
+            if not best or sc > best["score"]:
+                best = {"score": sc, "ver": str(d.get("version") or ""), "vec": str(d.get("vectorString") or "")[:200],
+                        "src": "NVD"}
+        if best:
+            return best
+    return None
+
+
+def nvd_fetch_vendors() -> list[dict]:
+    """Interroge la NVD (au plus toutes les NVD_EVERY_HOURS heures) et renvoie les fiches brutes utiles."""
+    cache = _load(NVD_FILE)
+    if NOW.timestamp() - cache.get("t", 0) < NVD_EVERY_HOURS * 3600 and "items" in cache:
+        return cache["items"]
+    fmt = "%Y-%m-%dT%H:%M:%S.000"
+    start = (NOW - timedelta(days=NVD_DAYS)).astimezone(timezone.utc).strftime(fmt)
+    end = NOW.astimezone(timezone.utc).strftime(fmt)
+    out, errors, seen = [], 0, set()
+    for n, (source, kw, rx) in enumerate(NVD_VENDORS):
+        if n:
+            time.sleep(6.5)   # la NVD limite à 5 requêtes par 30 secondes sans clé
+        try:
+            data = json.loads(fetch(NVD_URL.format(kw=urllib.parse.quote(kw), start=start, end=end), timeout=40))
+        except Exception as ex:
+            errors += 1
+            print(f"[!] NVD {kw} : {type(ex).__name__}")
+            if errors >= 2 and not out:   # service visiblement indisponible : inutile d'insister
+                errors = len(NVD_VENDORS)
+                break
+            continue
+        for v in data.get("vulnerabilities") or []:
+            c = v.get("cve") or {}
+            cid = c.get("id", "")
+            desc = next((d.get("value", "") for d in c.get("descriptions") or [] if d.get("lang") == "en"), "")
+            if not cid or cid in seen or not re.search(rx, desc, re.I):
+                continue
+            sc = nvd_score(c)
+            if not sc or sc["score"] < 7:
+                continue
+            refs = c.get("references") or []
+            link = next((r.get("url") for r in refs if "Vendor Advisory" in (r.get("tags") or [])), "") \
+                or f"https://nvd.nist.gov/vuln/detail/{cid}"
+            seen.add(cid)
+            out.append({"source": source, "cve": cid, "desc": desc[:600], "date": c.get("published", ""),
+                        "link": safe_url(link), "cvss": sc, "kev": bool(c.get("cisaExploitAdd"))})
+    if errors < len(NVD_VENDORS):   # au moins une réponse : on mémorise
+        _save(NVD_FILE, {"t": NOW.timestamp(), "items": out})
+        return out
+    # NVD injoignable : nouvel essai dans une heure (sans bloquer chaque passage), anciens résultats gardés
+    _save(NVD_FILE, {"t": NOW.timestamp() - (NVD_EVERY_HOURS - 1) * 3600, "items": cache.get("items", [])})
+    if not cache.get("items"):
+        raise RuntimeError("NVD injoignable")
+    return cache["items"]
+
+
+def collect_nvd_vendors() -> list[dict]:
+    items = []
+    for r in nvd_fetch_vendors():
+        date = parse_date(r["date"]) or (datetime.fromisoformat(r["date"]).replace(tzinfo=timezone.utc)
+                                         if r["date"] else None)
+        if not date or NOW - date > timedelta(days=NVD_DAYS):
+            continue
+        level = EXPLOITED if r.get("kev") else CRITICAL if r["cvss"]["score"] >= 9 else WATCH
+        title = f"{r['source']} — {r['cve']} : {clean(r['desc'], 170)}"
+        it = make_item(r["source"], title, r["link"], date, clean(r["desc"], 400), level)
+        if r["cve"] not in it["cves"]:
+            it["cves"].insert(0, r["cve"])
+        it["cvss"] = r["cvss"]
+        items.append(it)
+    by_src = {}
+    for it in items:
+        by_src[it["source"]] = by_src.get(it["source"], 0) + 1
+    for source in dict.fromkeys(s for s, _, _ in NVD_VENDORS):
+        STATUS.append((source, True, f"{by_src.get(source, 0)} avis (via NVD)"))
+    return items
+
+
+# ═════════════════════ Agenda des correctifs ═════════════════════
+# Dates connues à l'avance : Patch Tuesday, Oracle CPU, bulletin Android, échéances CISA, fins de maintenance.
+def nth_weekday(y: int, m: int, weekday: int, n: int):
+    """n-ième jour de semaine (0 = lundi) du mois."""
+    import calendar
+    first = datetime(y, m, 1).weekday()
+    day = 1 + (weekday - first) % 7 + 7 * (n - 1)
+    return datetime(y, m, day).date() if day <= calendar.monthrange(y, m)[1] else None
+
+
+AGENDA: list[dict] = []   # événements calculés à chaque passage (page d'accueil, État du parc, agenda.ics)
+
+
+def agenda_events(entries: list[dict], eol: list[dict], months: int = 12) -> list[dict]:
+    today = NOW.astimezone(PARIS).date()
+    ev = []
+    y, m = today.year, today.month
+    for k in range(months + 1):
+        yy, mm = y + (m - 1 + k) // 12, (m - 1 + k) % 12 + 1
+        pt = nth_weekday(yy, mm, 1, 2)
+        ev.append({"date": pt, "kind": "patch", "uid": f"patchtuesday-{pt}",
+                   "title": "Patch Tuesday : Microsoft, SAP, Adobe, Fortinet, Ivanti",
+                   "desc": "Correctifs mensuels publiés le 2e mardi du mois (Microsoft vers 19 h, heure de Paris). "
+                           "Prévoir la fenêtre de maintenance dans les jours qui suivent.",
+                   "link": "https://msrc.microsoft.com/update-guide"})
+        an = nth_weekday(yy, mm, 0, 1)
+        ev.append({"date": an, "kind": "patch", "uid": f"android-{an}", "title": "Bulletin de sécurité Android",
+                   "desc": "Correctifs mensuels Android et Pixel (1er lundi du mois).",
+                   "link": "https://source.android.com/docs/security/bulletin"})
+        if mm in (1, 4, 7, 10):
+            oc = nth_weekday(yy, mm, 1, 3)
+            ev.append({"date": oc, "kind": "patch", "uid": f"oracle-cpu-{oc}",
+                       "title": "Oracle Critical Patch Update (trimestriel)",
+                       "desc": "Correctifs trimestriels Oracle : Java, MySQL, Oracle Database, WebLogic… (3e mardi).",
+                       "link": "https://www.oracle.com/security-alerts/"})
+    for it in entries:
+        if it.get("due") and it["level"] >= EXPLOITED:
+            try:
+                d = datetime.strptime(it["due"], "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            ev.append({"date": d, "kind": "due", "uid": f"cisa-{entry_id(it)}",
+                       "title": f"Échéance CISA : {it['title'][:90]}",
+                       "desc": f"Date limite fixée par la CISA pour corriger. {it.get('action', '')}".strip(),
+                       "link": it["link"], "anchor": anchor(it)})
+    for r in eol:
+        d = r["date"].date() if isinstance(r["date"], datetime) else r["date"]
+        ev.append({"date": d, "kind": "eol", "uid": f"eol-{r['product']}-{r['cycle']}",
+                   "title": f"Fin de maintenance : {r['product']} {r['cycle']}",
+                   "desc": f"Plus de correctifs de sécurité après cette date. Dernière version : {r.get('latest') or '?'}.",
+                   "link": "https://endoflife.date/"})
+    return sorted((x for x in ev if x["date"] and x["date"] >= today - timedelta(days=1)), key=lambda x: x["date"])
+
+
+def agenda_when(d) -> str:
+    today = NOW.astimezone(PARIS).date()
+    n = (d - today).days
+    lab = "aujourd'hui" if n == 0 else "demain" if n == 1 else "hier" if n == -1 else f"dans {n} j"
+    return f"{JOURS[d.weekday()][:3].lower()}. {d.day:02d}/{d.month:02d} · {lab}"
+
+
+def agenda_html(events: list[dict], days: int = 21, limit: int = 6, full: bool = False) -> str:
+    today = NOW.astimezone(PARIS).date()
+    sel = [x for x in events if (x["date"] - today).days <= days][: (999 if full else limit)]
+    if not sel:
+        return ""
+    lis = []
+    for x in sel:
+        href = f'./#{x["anchor"]}' if x.get("anchor") else x["link"]
+        ext = "" if x.get("anchor") else ' target="_blank" rel="noopener"'
+        lis.append(f'<li class="ag-{x["kind"]}"><time datetime="{x["date"].isoformat()}">{e(agenda_when(x["date"]))}</time>'
+                   f'<a href="{e(href)}"{ext}>{e(x["title"])}</a></li>')
+    sub = "" if full else '<a class="ag-more" href="etat.html#agenda">Tout l\'agenda</a>'
+    return (f'<div class="agenda"><ul>{"".join(lis)}</ul><p class="ag-foot">{sub}'
+            '<a class="ag-ics" href="agenda.ics" download>Ajouter à mon agenda (Outlook, Google, iPhone)</a></p></div>')
+
+
+def agenda_next() -> str:
+    today = NOW.astimezone(PARIS).date()
+    nxt = next((x for x in AGENDA if x["date"] >= today), None)
+    if not nxt:
+        return "rien de prévu"
+    t = re.sub(r"\s*:.*$", "", nxt["title"]) if nxt["kind"] == "patch" else nxt["title"]
+    return f"prochain : {t[:60]} ({agenda_when(nxt['date'])})"
+
+
+def agenda_ics(events: list[dict]) -> str:
+    def esc(t: str) -> str:
+        return str(t).replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+    def fold(line: str) -> str:
+        out, b = [], line.encode("utf-8")
+        while len(b) > 74:
+            cut = 74
+            while (b[cut] & 0xC0) == 0x80:
+                cut -= 1
+            out.append(b[:cut].decode("utf-8"))
+            b = b" " + b[cut:]
+        out.append(b.decode("utf-8"))
+        return "\r\n".join(out)
+
+    stamp = NOW.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//L3NOX//Agenda des correctifs//FR", "CALSCALE:GREGORIAN",
+             "METHOD:PUBLISH", "X-WR-CALNAME:L3NOX · Agenda des correctifs", "X-WR-TIMEZONE:Europe/Paris",
+             "REFRESH-INTERVAL;VALUE=DURATION:PT12H", "X-PUBLISHED-TTL:PT12H"]
+    for x in events:
+        uid = re.sub(r"[^A-Za-z0-9.-]+", "-", x["uid"])[:120] + "@l3nox.fr"
+        url = (base_url() + "#" + x["anchor"]) if x.get("anchor") and base_url() else x["link"]
+        lines += ["BEGIN:VEVENT", f"UID:{uid}", f"DTSTAMP:{stamp}",
+                  f"DTSTART;VALUE=DATE:{x['date'].strftime('%Y%m%d')}",
+                  f"DTEND;VALUE=DATE:{(x['date'] + timedelta(days=1)).strftime('%Y%m%d')}",
+                  f"SUMMARY:{esc(x['title'])}", f"DESCRIPTION:{esc(x['desc'] + ' ' + url)}"]
+        if url:
+            lines.append(f"URL:{url}")
+        lines += ["TRANSP:TRANSPARENT", "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    return "\r\n".join(fold(l) for l in lines) + "\r\n"
+
+
 def entry_id(it: dict) -> str:
     return it["cves"][0] if it["cves"] else (it["link"] or it["title"])
 
@@ -1563,6 +2173,12 @@ def merge_entries(items: list[dict]) -> list[dict]:
                 prim["playbook"] = it["playbook"]
             if it.get("cvss") and (not prim.get("cvss") or it["cvss"]["score"] > prim["cvss"]["score"]):
                 prim["cvss"] = it["cvss"]
+            if it.get("epss") and (not prim.get("epss") or it["epss"]["p"] > prim["epss"]["p"]):
+                prim["epss"] = it["epss"]
+            if it.get("exploit") and not prim.get("exploit"):
+                prim["exploit"] = it["exploit"]
+            if it.get("due") and not prim.get("due"):
+                prim["due"] = it["due"]
     return out
 
 
@@ -1618,7 +2234,9 @@ def item_row(it: dict, post: dict | None = None) -> str:
     lvl = it["level"]
     new = ('<span class="new">nouveau</span>'
            if it["date"] and lvl > INFO and NOW - it["date"] <= timedelta(hours=NEW_HOURS) else "")
-    head_attrs = f'class="row{" post" if post else " plain"}" id="{anchor(it)}" data-id="{e(entry_id(it))}" data-lv="{lvl}"'
+    head_attrs = (f'class="row{" post" if post else " plain"}" id="{anchor(it)}" data-id="{e(entry_id(it))}" data-lv="{lvl}"'
+                  f' data-tech="{" ".join(techs_of(it))}" data-date="{(it["date"] or NOW).isoformat()}"'
+                  + (f' data-due="{e(it["due"])}"' if it.get("due") else ""))
 
     if post:  # article rédigé par l'IA
         qual = re.sub(r"^\s*\**\s*P[123]\b\s*", "", post.get("prio") or "").strip()
@@ -1631,7 +2249,7 @@ def item_row(it: dict, post: dict | None = None) -> str:
             extra.append(f'<span>échéance CISA le {e(due_fr(it["due"]))}</span>')
         return (f'<li {head_attrs}><article>'
                 f'<p class="pstamp"><time datetime="{(it["date"] or NOW).isoformat()}">{e(stamp_fr(it["date"]))}</time>{new}</p>'
-                f'<p class="pprio lv{lvl}">{md_inline(prio)}{sev_html(it, long=True)}</p>'
+                f'<p class="pprio lv{lvl}">{md_inline(prio)}{sev_html(it, long=True)}{epss_html(it)}{exploit_html(it)}</p>'
                 f'<div class="head"><h4 class="ptitle"><a class="t" href="{e(it["link"])}" target="_blank" rel="noopener">{e(title)}</a></h4></div>'
                 f'<div class="sum pbody">{post_body_html(post["md"])}</div>'
                 f'<div class="meta psrc"><span>Sources officielles :</span>{" · ".join(sources_links(it))}'
@@ -1642,7 +2260,7 @@ def item_row(it: dict, post: dict | None = None) -> str:
     src = (f'<a class="src" href="{e(site)}" target="_blank" rel="noopener">{e(it["source"])}</a>'
            if site else f'<span class="src">{e(it["source"])}</span>')
     iso = it["date"].isoformat() if it["date"] else ""
-    meta = [src, f'<time datetime="{iso}">{e(when(it["date"]))}</time>'] + ([sev_html(it)] if sev_html(it) else [])
+    meta = [src, f'<time datetime="{iso}">{e(when(it["date"]))}</time>'] + [x for x in (sev_html(it), epss_html(it), exploit_html(it)) if x]
     meta += [f'<span class="cve">{e(c)}</span>' for c in it["cves"][:3]]
     also = list(dict.fromkeys((a["source"], a["link"]) for a in it.get("also", []) if a["source"] != it["source"]))
     if also:
@@ -1654,9 +2272,36 @@ def item_row(it: dict, post: dict | None = None) -> str:
         meta.append(f'<span>échéance CISA le {e(due_fr(it["due"]))}</span>')
     summary = it["summary"] + (f" Action demandée par la CISA : {it['action']}" if it["action"] else "")
     sum_html = f'<p class="sum">{e(summary)}</p>' if summary.strip() else ""
+    todo = todo_html(it, with_steps=True) if lvl <= INFO else measures_html(it)
     return (f'<li {head_attrs}>'
             f'<div class="head"><a class="t" href="{e(it["link"])}" target="_blank" rel="noopener">{e(it["title"])}</a>{new}</div>'
-            f'<div class="meta">{"".join(meta)}</div>{sum_html}{todo_html(it, with_steps=True)}{ACTS_HTML}</li>')
+            f'<div class="meta">{"".join(meta)}</div>{sum_html}{todo}{ACTS_HTML}</li>')
+
+
+def measures_html(it: dict) -> str:
+    """Alerte P1/P2/P3 dont l'article n'est pas encore rédigé : fiche de mesures SysOps toujours présente."""
+    pb = PB_BY_ID.get(it["playbook"]) if it["playbook"] else None
+    steps = list(pb["steps"]) if pb else list(GENERIC_STEPS)
+    if it["action"]:
+        steps.insert(0, f"Appliquer l'action demandée par la CISA : {it['action']}"
+                        + (f" (échéance le {due_fr(it['due'])})." if it.get("due") else "."))
+    rows = [("Priorité", f"{LEVEL_TAG[it['level']]} — {LEVEL_NAME[it['level']]}"),
+            ("Domaine", pb["label"] if pb else "non déterminé, voir l'avis"),
+            ("CVE", ", ".join(it["cves"][:4]) or "aucune citée"),
+            ("Sévérité", sev_text(it) or "score non publié"),
+            ("Risque d'exploitation", risk_text(it) or "pas de donnée publique"),
+            ("Échéance CISA", due_fr(it["due"]) if it.get("due") else "aucune")]
+    table = "".join(f"<tr><th>{e(k)}</th><td>{e(v)}</td></tr>" for k, v in rows)
+    cmds = "".join(f'<p class="os">{e(name)}</p><div class="code"><pre><code>{e(code)}</code></pre>'
+                   f'<button class="copy" type="button">Copier</button></div>' for name, code in (pb["cmds"].items() if pb else []))
+    srcs = " · ".join(sources_links(it))
+    return ('<details class="todo-in more-fb"><summary>Mesures SysOps</summary>'
+            f'<table class="fb-tab">{table}</table>'
+            '<h4>Mesures SysOps</h4><ol class="steps-in">' + "".join(f"<li>{e(x)}</li>" for x in steps) + "</ol>"
+            + (f"<h4>Commandes utiles</h4>{cmds}" if cmds else "")
+            + f'<p class="fb-src"><b>Sources officielles :</b> {srcs}</p>'
+            '<p class="fb-wait">L\'article détaillé (versions, correctifs, impact) est en cours de rédaction et '
+            'remplacera cette fiche à un prochain passage.</p></details>')
 
 
 def cmds_html(cmds: dict) -> str:
@@ -1772,7 +2417,7 @@ def md_inline(t: str) -> str:
 
 def detail_html(it: dict, post) -> str:
     """Fiche dépliable d'une alerte, affichée sous sa ligne dans le tableau du briefing."""
-    head = (f'<p class="dt-head"><span class="tag lv{it["level"]}">{LEVEL_TAG[it["level"]] or "Info"}</span>{sev_html(it)}'
+    head = (f'<p class="dt-head"><span class="tag lv{it["level"]}">{LEVEL_TAG[it["level"]] or "Info"}</span>{sev_html(it)}{epss_html(it)}{exploit_html(it)}'
             f'<a href="{e(it["link"])}" target="_blank" rel="noopener">{e((post or {}).get("title") or it["title"])}</a></p>')
     if post and post.get("md"):
         body = f'<div class="pbody">{md_to_html(post["md"])}</div>'
@@ -2041,6 +2686,7 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
     facts.append('<li><a href="etat.html">État du parc</a></li>')
 
     filters = ('<button class="f" data-v="all" type="button"><i></i>Tout <b></b></button>'
+               '<button class="f fparc" data-v="parc" type="button"><i></i>Mon parc <b></b></button>'
                '<button class="f lv3" data-v="p1" type="button"><i></i>P1 <b></b></button>'
                '<button class="f lv2" data-v="p2" type="button"><i></i>P2 <b></b></button>'
                '<button class="f lv1" data-v="p3" type="button"><i></i>P3 <b></b></button>'
@@ -2075,6 +2721,16 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
 </div></div>
 <main class="wrap">
 {briefing_html(briefing)}
+<section class="perso" aria-label="Mon suivi">
+<div class="suivi" id="suivi">
+<button class="tile" type="button" data-go="p1"><span class="tn" id="s-p1">–</span><span class="tl">P1 ouvertes</span><span class="ts" id="s-p1s"></span></button>
+<button class="tile" type="button" data-go="oldest"><span class="tn" id="s-old">–</span><span class="tl">plus ancienne P1 ouverte</span><span class="ts" id="s-olds"></span></button>
+<button class="tile" type="button" data-go="late"><span class="tn" id="s-late">–</span><span class="tl">échéances CISA</span><span class="ts" id="s-lates"></span></button>
+<button class="tile" type="button" data-go="done"><span class="tn" id="s-done">–</span><span class="tl">traitées en 7 jours</span><span class="ts" id="s-dones"></span></button>
+</div>
+{parc_panel_html()}
+<details class="agbox"><summary>Agenda des correctifs <span>{e(agenda_next())}</span></summary>{agenda_html(AGENDA, days=21, limit=6)}</details>
+</section>
 <div class="tools"><div class="filters" role="group" aria-label="Filtrer par niveau">{filters}</div>
 <div class="field">{search_icon}
 <input id="q" type="search" placeholder="Rechercher un produit, une CVE, une source…" aria-label="Rechercher" autocomplete="off">
@@ -2266,7 +2922,7 @@ def ai_input(entries: list[dict], eol: list[dict], status_rows: list[dict]) -> s
         also = ", ".join(sorted({a["source"] for a in i.get("also", [])}))
         lines.append(f"- [{LEVEL_TAG[i['level']]}] {i['source']}{' (aussi : ' + also + ')' if also else ''} | "
                      f"{(i['date'] or NOW).astimezone(PARIS).strftime('%d/%m %H:%M')} | {i['title']} | "
-                     f"{', '.join(i['cves'][:4]) or '-'}{' | ' + sev_text(i) if sev_text(i) else ''} | {i['summary'][:300]}"
+                     f"{', '.join(i['cves'][:4]) or '-'}{' | ' + sev_text(i) if sev_text(i) else ''}{' | ' + risk_text(i) if risk_text(i) else ''} | {i['summary'][:300]}"
                      f"{' | Action CISA : ' + i['action'] if i['action'] else ''} | {i['link']}")
     lines.append("\n## Pages d'état des services (24 h)")
     for r in status_rows:
@@ -2410,6 +3066,7 @@ Un paragraphe d'introduction : ce qui est nouveau, la CVE, le score CVSS s'il es
 | Systèmes concernés | … |
 | Versions vulnérables | … |
 | Impact | … |
+| Sévérité et risque | score CVSS, probabilité EPSS et exploit public, seulement s'ils sont fournis |
 | Correctifs | … |
 
 #### Impact concret
@@ -2462,6 +3119,7 @@ def post_prompt(it: dict) -> str:
              f"Titre : {it['title']}",
              f"CVE : {', '.join(it['cves']) or 'aucune citée'}",
              f"Sévérité : {sev_text(it) or 'score CVSS non publié'}",
+             f"Risque d'exploitation : {risk_text(it) or 'pas de donnée EPSS ni d exploit public connu'}",
              f"Résumé : {it['summary']}"]
     if it["action"]:
         lines.append(f"Action demandée par la CISA : {it['action']} (échéance {it['due']})")
@@ -2666,6 +3324,11 @@ CISA, alerte du CERT-FR, éditeur), <b>P2</b> pour les failles critiques, <b>P3<
 <li>Le briefing du jour et les articles détaillés sont rédigés automatiquement par une intelligence artificielle à
 partir du texte des avis officiels : la synthèse chaque matin (mise à jour dans la journée si une alerte importante
 arrive), les articles au fil de l'eau, dans la limite d'un budget mensuel fixe. Ils peuvent contenir des erreurs : vérifiez toujours l'avis officiel avant d'agir.</li>
+<li>Pour chaque faille, le site affiche aussi la <b>sévérité</b> (score CVSS de la fiche CVE officielle), le
+<b>risque d'exploitation</b> (probabilité EPSS publiée par FIRST.org) et signale quand un <b>exploit public</b> existe
+(Exploit-DB, PoC-in-GitHub, CISA).</li>
+<li><b>Mon parc</b> et <b>Mon suivi</b> sont propres à chaque visiteur : ils sont calculés dans votre navigateur à partir
+de vos choix, qui ne sont envoyés à personne (sauf, pour le propriétaire du site, vers son propre espace de synchronisation).</li>
 <li>Les commandes proposées sont des exemples génériques, à tester avant toute application en production.</li>
 </ul>
 
@@ -2692,6 +3355,7 @@ pour les télécharger, ce qui leur transmet votre adresse IP.</p>"""
 
 def write_extras(out_dir: str, extra_pages: list[str] | None = None) -> None:
     files = {"favicon.svg": FAVICON_SVG, "a-propos.html": about_page(), "manifest.webmanifest": manifest_json(),
+             "agenda.ics": agenda_ics(AGENDA),
              "404.html": simple_page("Page introuvable",
                                      "<h1>Page introuvable</h1><p>Cette page n'existe pas ou n'existe plus.</p>", "404.html")}
     base = base_url()
@@ -2724,6 +3388,7 @@ def arch_item(it: dict, post) -> dict:
     d = {"id": entry_id(it), "level": it["level"], "title": it["title"], "link": it["link"], "source": it["source"],
          "date": (it["date"] or NOW).isoformat(), "summary": it["summary"][:500], "cves": it["cves"][:6],
          "playbook": it["playbook"], "rw": bool(it["ransomware"]), "cvss": it.get("cvss"),
+         "epss": it.get("epss"), "exploit": it.get("exploit"),
          "also": [[a["source"], a["link"]] for a in it.get("also", [])[:5]]}
     if post:
         d["post"] = {k: post[k] for k in ("prio", "title", "md") if k in post}
@@ -2736,6 +3401,9 @@ def from_arch(d: dict) -> tuple[dict, dict | None]:
           "playbook": d.get("playbook") if d.get("playbook") in PB_BY_ID else None, "cves": d.get("cves", []),
           "action": "", "due": "", "ransomware": bool(d.get("rw")),
           "cvss": d["cvss"] if isinstance(d.get("cvss"), dict) and isinstance(d["cvss"].get("score"), (int, float)) else None,
+          "epss": d["epss"] if isinstance(d.get("epss"), dict) and isinstance(d["epss"].get("p"), (int, float)) else None,
+          "exploit": ({"src": str(d["exploit"].get("src", ""))[:20], "url": safe_url(d["exploit"].get("url", ""))}
+                      if isinstance(d.get("exploit"), dict) else None),
           "also": [{"source": a[0], "link": safe_url(a[1]), "title": ""} for a in d.get("also", []) if len(a) == 2]}
     return it, d.get("post")
 
@@ -2838,6 +3506,8 @@ def state_page(entries: list[dict], eol: list[dict], status_rows: list[dict]) ->
             "domaines concernés, fins de maintenance, disponibilité des grands services et état des sources.</p>"
             + section("Panorama par domaine", "Où en est chaque partie de l'infrastructure",
                       panorama_html(entries, eol, status_rows), "panorama")
+            + section("Agenda des correctifs", "Patch Tuesday, correctifs trimestriels, échéances CISA et fins de "
+                      "maintenance des 60 prochains jours", agenda_html(AGENDA, days=60, full=True), "agenda")
             + section("Fins de maintenance", f"Versions arrivées en fin de vie ces {EOL_PAST_DAYS} derniers jours "
                       f"ou dans les {EOL_NEXT_DAYS} prochains", eol_html(eol), "eol")
             + section("Disponibilité des services", f"Pages d'état officielles, dernières {STATUS_HOURS} h",
@@ -2845,7 +3515,7 @@ def state_page(entries: list[dict], eol: list[dict], status_rows: list[dict]) ->
             + section("Sources", "Cliquez sur une source pour ouvrir son site", sources_html(), "sources"))
     return simple_page("État du parc", body, "etat.html",
                        f"Panorama, fins de maintenance et disponibilité des services suivis par {SITE_NAME}.",
-                       active="state", extra_css=".doc{max-width:980px}.doc ul.pano,.doc ul.services{padding:0}")
+                       active="state", extra_css=".doc{max-width:980px}.doc ul.pano,.doc ul.services,.doc .agenda ul{padding:0}")
 
 
 def archive_pages(days: dict) -> dict:
@@ -2924,6 +3594,9 @@ def ntfy(title: str, message: str, click: str = "", priority: int = 5, tags=None
 
 
 def notify_p1(items: list[dict]) -> None:
+    """Notification immédiate pour chaque nouvelle alerte importante.
+    Sans « Mon parc » (variable L3NOX_PARC vide) : toutes les nouvelles P1.
+    Avec « Mon parc » : les nouvelles P1 et P2 qui concernent le parc (les autres P1 vont dans le récap du lundi)."""
     if not NTFY_TOPIC:
         print("[--] Notifications : secret NTFY_TOPIC absent, rien envoyé.")
         return
@@ -2934,9 +3607,13 @@ def notify_p1(items: list[dict]) -> None:
     except (OSError, ValueError):
         seen, first_run = {}, True
 
-    p1 = sorted((i for i in items if i["level"] == EXPLOITED), key=lambda i: i["date"] or NOW, reverse=True)
+    if MY_PARC:
+        cands = [i for i in items if i["level"] >= CRITICAL and in_my_parc(i)]
+    else:
+        cands = [i for i in items if i["level"] == EXPLOITED]
+    cands.sort(key=lambda i: (-i["level"], -(i["date"] or NOW).timestamp()))
     fresh, batch_keys = [], set()
-    for it in p1:
+    for it in cands:
         keys = item_keys(it)
         if not keys or any(k in seen or k in batch_keys for k in keys):
             continue  # déjà notifiée (même CVE vue via une autre source, par exemple)
@@ -2946,29 +3623,35 @@ def notify_p1(items: list[dict]) -> None:
     try:
         if first_run:
             ntfy("L3NOX · notifications activées",
-                 f"{len(p1)} alerte(s) P1 déjà en cours, visibles sur le bulletin. "
-                 "Vous serez prévenu ici de chaque nouvelle faille exploitée.",
+                 f"{len(cands)} alerte(s) déjà en cours, visibles sur le bulletin. Vous serez prévenu ici de chaque "
+                 + ("nouvelle alerte P1 ou P2 qui concerne votre parc." if MY_PARC else "nouvelle faille exploitée (P1)."),
                  f"https://{SITE_DOMAIN}/" if SITE_DOMAIN else "", 3, ["white_check_mark"])
         elif len(fresh) > NOTIFY_MAX:
-            lines = "\n".join(f"• {i['title']}" for i in fresh[:10])
-            ntfy(f"🔴 {len(fresh)} nouvelles alertes P1 exploitées", lines,
-                 f"https://{SITE_DOMAIN}/#actions" if SITE_DOMAIN else "")
+            lines = "\n".join(f"• [{LEVEL_TAG[i['level']]}] {i['title']}" for i in fresh[:10])
+            ntfy(f"🔴 {len(fresh)} nouvelles alertes" + (" dans votre parc" if MY_PARC else " P1 exploitées"), lines,
+                 f"https://{SITE_DOMAIN}/#{'parc' if MY_PARC else 'p1'}" if SITE_DOMAIN else "")
         else:
             for it in fresh:
-                body = it["summary"] or "Vulnérabilité activement exploitée."
+                body = it["summary"] or ("Vulnérabilité activement exploitée." if it["level"] == EXPLOITED
+                                         else "Vulnérabilité critique.")
                 if it["action"]:
                     body += f"\nAction : {it['action']}"
+                risk = " · ".join(x for x in [sev_text(it).split(" (")[0], risk_text(it)] if x)
+                if risk:
+                    body += f"\n{risk}"
                 if it["cves"]:
                     body += "\n" + ", ".join(it["cves"][:3])
                 body += f"\nSource : {it['source']}"
                 site = f"https://{SITE_DOMAIN}/#{anchor(it)}" if SITE_DOMAIN else ""
-                ntfy(f"🔴 P1 · {it['title']}", body, site or it["link"])
+                icon = "🔴" if it["level"] == EXPLOITED else "🟠"
+                ntfy(f"{icon} {LEVEL_TAG[it['level']]} · {it['title']}", body, site or it["link"],
+                     5 if it["level"] == EXPLOITED else 4)
     except Exception as e:  # on ne marque rien comme envoyé si l'envoi échoue
         print(f"[!!] Notifications : échec de l'envoi ({e})")
         return
 
     stamp = NOW.strftime("%Y-%m-%d")
-    for it in (p1 if first_run else fresh):
+    for it in (cands if first_run else fresh):
         for k in item_keys(it):
             seen[k] = stamp
     limit = (NOW - timedelta(days=STATE_KEEP_DAYS)).strftime("%Y-%m-%d")
@@ -2976,14 +3659,57 @@ def notify_p1(items: list[dict]) -> None:
     os.makedirs(os.path.dirname(STATE_FILE) or ".", exist_ok=True)
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(seen, f, indent=0)
-    print(f"[ok] Notifications : {'activation' if first_run else str(len(fresh)) + ' nouvelle(s) alerte(s) P1'} envoyée(s).")
+    print(f"[ok] Notifications : {'activation' if first_run else str(len(fresh)) + ' nouvelle(s) alerte(s)'} envoyée(s).")
+
+
+RECAP_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "recap.json")
+RECAP_HOUR = 8   # le lundi, à partir de 8 h (heure de Paris)
+
+
+def weekly_recap(entries: list[dict], events: list[dict]) -> None:
+    """Le lundi matin : récapitulatif de la semaine écoulée et de la semaine à venir."""
+    loc = NOW.astimezone(PARIS)
+    if not NTFY_TOPIC or loc.weekday() != 0 or loc.hour < RECAP_HOUR:
+        return
+    week = loc.strftime("%G-W%V")
+    state = _load(RECAP_FILE)
+    if state.get("week") == week:
+        return
+    since = NOW - timedelta(days=7)
+    recent = [i for i in entries if i["date"] and i["date"] >= since and i["level"] >= WATCH]
+    n = {lv: sum(1 for i in recent if i["level"] == lv) for lv in (EXPLOITED, CRITICAL, WATCH)}
+    lines = [f"Semaine écoulée : {n[EXPLOITED]} P1, {n[CRITICAL]} P2, {n[WATCH]} P3."]
+    if MY_PARC:
+        mine = [i for i in recent if in_my_parc(i) and i["level"] >= CRITICAL]
+        lines.append(f"Dans votre parc : {len(mine)} alerte(s) P1/P2.")
+        lines += [f"• [{LEVEL_TAG[i['level']]}] {i['title'][:90]}" for i in mine[:5]]
+        other = [i for i in recent if i["level"] == EXPLOITED and not in_my_parc(i)]
+        if other:
+            lines.append(f"Autres failles exploitées (hors parc) : {len(other)}")
+            lines += [f"• {i['title'][:90]}" for i in other[:5]]
+    else:
+        top = sorted((i for i in recent if i["level"] >= CRITICAL), key=lambda i: -i["level"])[:6]
+        lines += [f"• [{LEVEL_TAG[i['level']]}] {i['title'][:90]}" for i in top]
+    today = loc.date()
+    soon = [x for x in events if 0 <= (x["date"] - today).days <= 7]
+    if soon:
+        lines.append("Cette semaine :")
+        lines += [f"• {JOURS[x['date'].weekday()]} {x['date'].strftime('%d/%m')} : {x['title'][:80]}" for x in soon[:6]]
+    try:
+        ntfy(f"🗓️ L3NOX · récap de la semaine ({loc.strftime('%d/%m')})", "\n".join(lines),
+             f"https://{SITE_DOMAIN}/" if SITE_DOMAIN else "", 3, ["calendar"])
+    except Exception as ex:
+        print(f"[!!] Récap du lundi : échec de l'envoi ({ex})")
+        return
+    _save(RECAP_FILE, {"week": week, "sent": NOW.isoformat()})
+    print("[ok] Récap du lundi envoyé.")
 
 
 def main(out_dir: str = "_site") -> None:
     kev = safe("CISA KEV", collect_kev)
     cert = collect_cert()
     redhat = safe("Red Hat", collect_redhat)
-    vendors = collect_vendors()
+    vendors = collect_vendors() + safe("NVD (NIST)", collect_nvd_vendors)
     ghsa = safe("GitHub Advisory", collect_ghsa)
     status_rows = collect_status()
     eol = collect_eol()
@@ -2993,7 +3719,14 @@ def main(out_dir: str = "_site") -> None:
     except Exception as ex:   # la sévérité est un plus : son absence ne bloque jamais le bulletin
         STATUS.append(("Registre CVE (sévérité)", False, type(ex).__name__))
         print(f"[!] Sévérité CVSS : {ex}")
+    for name, func in (("FIRST EPSS", enrich_epss), ("Exploits publics", enrich_exploits)):
+        try:   # informations en plus : leur absence ne bloque jamais le bulletin
+            func(kev + cert + redhat + vendors + ghsa)
+        except Exception as ex:
+            STATUS.append((name, False, type(ex).__name__))
+            print(f"[!] {name} : {ex}")
     merged = merge_entries(kev + cert + redhat + vendors + ghsa + news)
+    AGENDA[:] = agenda_events(merged, eol)
     briefing = get_briefing(merged, eol, status_rows)
     posts = get_posts(merged, briefing)
 
@@ -3016,6 +3749,7 @@ def main(out_dir: str = "_site") -> None:
     for name, ok, detail in STATUS:
         print(f"[{'ok' if ok else '!!'}] {name}: {detail}")
     notify_p1(urgent)
+    weekly_recap(merged, AGENDA)
     print(f"Bulletin généré : {len(urgent)} alerte(s) prioritaire(s), {len(news)} actu(s).")
 
 
