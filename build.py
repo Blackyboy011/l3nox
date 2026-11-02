@@ -73,6 +73,37 @@ VENDOR_TITLE_KEEP = {"Google Chrome": re.compile(r"Stable Channel Update for Des
 # Base d'alertes GitHub (logiciels open source : Metabase, Kafka, GitLab, WordPress, npm, pip…)
 GHSA_URL = "https://api.github.com/advisories?type=reviewed&severity=critical&per_page=60&sort=published"
 GHSA_DAYS = 3
+# Briques d'infrastructure open source suivies aussi au niveau « élevé » (High), pas seulement « critique » :
+# reverse proxys, conteneurs, Kubernetes, secrets, supervision, forges… (paquets tels que GitHub les nomme)
+GHSA_INFRA = {
+    "Traefik": ["github.com/traefik/traefik/v3", "github.com/traefik/traefik/v2", "github.com/traefik/traefik"],
+    "Caddy": ["github.com/caddyserver/caddy/v2"],
+    "ingress-nginx": ["k8s.io/ingress-nginx"],
+    "containerd": ["github.com/containerd/containerd", "github.com/containerd/containerd/v2"],
+    "runc": ["github.com/opencontainers/runc"],
+    "Docker / Moby": ["github.com/docker/docker", "github.com/moby/moby", "github.com/moby/buildkit"],
+    "Kubernetes": ["k8s.io/kubernetes", "k8s.io/apiserver", "k8s.io/kubelet"],
+    "Helm": ["helm.sh/helm/v3", "helm.sh/helm/v4"],
+    "Argo CD": ["github.com/argoproj/argo-cd/v2", "github.com/argoproj/argo-cd/v3"],
+    "Rancher": ["github.com/rancher/rancher"],
+    "Portainer": ["github.com/portainer/portainer"],
+    "Cilium": ["github.com/cilium/cilium"],
+    "Istio": ["istio.io/istio"],
+    "etcd": ["go.etcd.io/etcd/server/v3", "go.etcd.io/etcd/v3"],
+    "HashiCorp Vault": ["github.com/hashicorp/vault"],
+    "HashiCorp Consul": ["github.com/hashicorp/consul"],
+    "Grafana": ["github.com/grafana/grafana"],
+    "Prometheus": ["github.com/prometheus/prometheus"],
+    "MinIO": ["github.com/minio/minio"],
+    "Harbor": ["github.com/goharbor/harbor"],
+    "Gitea": ["code.gitea.io/gitea"],
+    "Keycloak": ["org.keycloak:keycloak-services", "org.keycloak:keycloak-core"],
+    "Jenkins": ["org.jenkins-ci.main:jenkins-core"],
+    "Nextcloud": ["nextcloud/server"],
+}
+GHSA_INFRA_URL = ("https://api.github.com/advisories?type=reviewed&severity=high&per_page=100&sort=published"
+                  "&affects={pkgs}")
+GHSA_INFRA_DAYS = 5
 
 # Pages d'état des grands services (pannes en cours ou récentes)
 STATUS_FEEDS = {
@@ -196,6 +227,8 @@ SOURCE_SITES = {
     "Google Chrome": "https://chromereleases.googleblog.com/",
     **NVD_SITES_EARLY,
     "NVD (NIST)": "https://nvd.nist.gov/vuln/search",
+    "GitHub Advisory (infra)": "https://github.com/advisories?query=severity%3Ahigh",
+    "NVD (filet Mon parc)": "https://nvd.nist.gov/vuln/search",
     "Registre CVE (sévérité)": "https://www.cve.org/",
     "FIRST EPSS": "https://www.first.org/epss/",
     "Exploits publics": "https://www.exploit-db.com/",
@@ -219,6 +252,10 @@ SOURCE_DESC = {
     "SAP": "Failles SAP de score 7 ou plus, via la NVD",
     "Microsoft Exchange": "Failles Microsoft Exchange de score 7 ou plus, via la NVD",
     "NVD (NIST)": "Base américaine des vulnérabilités, interrogée toutes les 6 h pour les éditeurs ci-dessus",
+    "NVD (filet Mon parc)": "Filet de sécurité : toutes les failles notées 7 ou plus des 3 derniers jours qui touchent "
+                            "une technologie suivie, et les failles critiques (9 ou plus) de tous les autres produits",
+    "GitHub Advisory (infra)": "Failles de niveau élevé des briques d'infrastructure open source : Traefik, Caddy, "
+                               "containerd, runc, Docker, Kubernetes, Helm, Argo CD, Vault, Grafana, MinIO, Keycloak…",
     "Registre CVE (sévérité)": "Score CVSS officiel de chaque faille (éditeur ou CISA)",
     "FIRST EPSS": "Probabilité qu'une faille soit exploitée dans les 30 prochains jours",
     "Exploits publics": "Codes d'attaque publiés (Exploit-DB, PoC-in-GitHub, CISA)",
@@ -423,7 +460,7 @@ PLAYBOOKS = [
     },
     {
         "id": "containers", "label": "Conteneurs (Docker / Kubernetes)",
-        "match": r"docker|kubernetes|containerd|\brunc\b|podman",
+        "match": r"docker|kubernetes|containerd|\brunc\b|podman|traefik|caddy|helm|argo ?cd|portainer",
         "steps": [
             "Mettre à jour le moteur de conteneurs / les nœuds Kubernetes.",
             "Reconstruire les images à partir de bases corrigées et redéployer.",
@@ -773,6 +810,43 @@ def collect_ghsa() -> list[dict]:
 
 
 RESOLVED_RE = re.compile(r"\bresolved\b|\bcompleted\b|résolu|operating normally|has been mitigated", re.I)
+
+
+def collect_ghsa_infra() -> list[dict]:
+    """Failles de niveau « élevé » des briques d'infrastructure open source (Traefik, containerd, Vault…) : P3."""
+    headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    if os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = f"Bearer {os.environ['GITHUB_TOKEN']}"
+    pkg_name = {p: name for name, pkgs in GHSA_INFRA.items() for p in pkgs}
+    data = json.loads(fetch(GHSA_INFRA_URL.format(pkgs=urllib.parse.quote(",".join(pkg_name), safe=",")), headers=headers))
+    cutoff = NOW - timedelta(days=GHSA_INFRA_DAYS)
+    items = []
+    for a in data if isinstance(data, list) else []:
+        date = parse_date(a.get("published_at", ""))
+        if not date or date < cutoff:
+            continue
+        fixes, names = [], []
+        for v in a.get("vulnerabilities") or []:
+            pkg = (v.get("package") or {}).get("name", "")
+            if pkg in pkg_name and pkg_name[pkg] not in names:
+                names.append(pkg_name[pkg])
+            if v.get("first_patched_version"):
+                fixes.append(f"{pkg.rsplit('/', 1)[-1] if '/' in pkg else pkg} {v['first_patched_version']}")
+        product = " / ".join(names) or "Composant d'infrastructure"
+        score = (a.get("cvss") or {}).get("score") or ((a.get("cvss_severities") or {}).get("cvss_v3") or {}).get("score")
+        parts = ([f"CVSS {score}"] if score else []) + \
+                [("Corrigé en : " + ", ".join(dict.fromkeys(fixes[:4]))) if fixes else "Pas encore de version corrigée"]
+        it = make_item("GitHub Advisory (infra)", f"{product} — {clean(a.get('summary', ''), 180)}",
+                       a.get("html_url", ""), date, " · ".join(parts), WATCH)
+        if a.get("cve_id") and a["cve_id"] not in it["cves"]:
+            it["cves"].insert(0, a["cve_id"])
+        try:
+            if score and float(score) > 0:
+                it["cvss"] = {"score": float(score), "src": "GitHub"}
+        except (TypeError, ValueError):
+            pass
+        items.append(it)
+    return items
 
 
 def collect_status() -> list[dict]:
@@ -1537,13 +1611,13 @@ def sources_html() -> str:
     alias = {"CERT-FR alerte": "CERT-FR alertes"}
     rows, n_ok = [], 0
     for name, url in SOURCE_SITES.items():
-        if name in NEWS_FEEDS and not INCLUDE_PRESS:
+        if name in NEWS_FEEDS and not INCLUDE_PRESS and name not in st:
             continue
         ok, detail = st.get(alias.get(name, name), (None, "non interrogée"))
         n_ok += bool(ok)
         cls, txt = ("okk", detail) if ok else ("ko", "indisponible") if ok is False else ("unk", detail)
         rows.append(f'<li><a href="{e(url)}" target="_blank" rel="noopener">{e(name)}</a>'
-                    f'<span class="sd">{e(SOURCE_DESC.get(name, "Actualité IT et cybersécurité"))}</span>'
+                    f'<span class="sd">{e(SOURCE_DESC.get(name, "Presse sécurité : seuls les articles qui citent une CVE sont retenus"))}</span>'
                     f'<span class="{cls}">{e(txt)}</span></li>')
     return (f'<details class="srcs"><summary>{n_ok} sources sur {len(rows)} lues lors de la dernière mise à jour</summary>'
             f'<ul>{"".join(rows)}</ul></details>')
@@ -1704,6 +1778,9 @@ PARC = [
         ("citrix", "Citrix / NetScaler", r"citrix|netscaler", ["Citrix"]),
         ("sonicwall", "SonicWall", r"sonicwall|sonicos", []),
         ("juniper", "Juniper", r"juniper|junos", []),
+        ("pfsense", "pfSense / OPNsense", r"pfsense|opnsense", []),
+        ("vpn", "OpenVPN / WireGuard", r"openvpn|wireguard", []),
+        ("nas", "Synology / QNAP", r"synology|qnap", []),
         ("openssh", "OpenSSH", r"openssh", []),
         ("openssl", "OpenSSL", r"openssl", []),
     ]),
@@ -1712,17 +1789,23 @@ PARC = [
         ("proxmox", "Proxmox", r"proxmox", []),
         ("hyperv", "Hyper-V", r"hyper-v", []),
         ("veeam", "Veeam", r"veeam", ["Veeam"]),
-        ("k8s", "Kubernetes", r"kubernetes|\bk8s\b|kubelet|ingress-nginx", ["Kubernetes"]),
-        ("docker", "Docker / conteneurs", r"docker|containerd|\brunc\b|podman", []),
+        ("k8s", "Kubernetes", r"kubernetes|\bk8s\b|kubelet|ingress-nginx|helm|argo ?cd|rancher|cilium|istio|etcd", ["Kubernetes"]),
+        ("docker", "Docker / conteneurs", r"docker|containerd|\brunc\b|podman|\bmoby\b|portainer|harbor|minio", []),
     ]),
     ("Web, applications et données", [
         ("apache", "Apache HTTP Server", r"apache http|\bhttpd\b|apache2|mod_\w+", []),
         ("nginx", "nginx", r"nginx", []),
+        ("proxy", "Traefik / Caddy / HAProxy", r"traefik|caddy|haproxy|envoy proxy", []),
         ("php", "PHP", r"\bphp\b", []),
         ("java", "Java / Tomcat / Spring", r"\bjava\b|\bjdk\b|tomcat|spring|log4j|jboss|wildfly", []),
         ("cms", "WordPress / Drupal / Joomla", r"wordpress|drupal|joomla", []),
         ("atlassian", "Atlassian (Jira, Confluence)", r"atlassian|confluence|\bjira\b|bitbucket", ["Atlassian"]),
-        ("gitlab", "GitLab / Jenkins", r"gitlab|jenkins", ["GitLab"]),
+        ("gitlab", "GitLab / Jenkins / Gitea", r"gitlab|jenkins|gitea", ["GitLab"]),
+        ("secrets", "Vault / Keycloak / Consul", r"hashicorp|\bvault\b|keycloak|consul", []),
+        ("monitoring", "Grafana / Prometheus / Zabbix", r"grafana|prometheus|zabbix|nagios|centreon|icinga", []),
+        ("glpi", "GLPI / Nextcloud", r"\bglpi\b|nextcloud", []),
+        ("mail", "Postfix / Dovecot / Roundcube", r"postfix|dovecot|roundcube|zimbra|exim", []),
+        ("dns", "BIND / Unbound / dnsmasq", r"\bbind ?9\b|isc bind|\bunbound\b|dnsmasq|powerdns", []),
         ("sap", "SAP", r"\bsap\b|netweaver", ["SAP"]),
         ("db", "Bases de données", r"postgres|mysql|mariadb|oracle database|sql server|mongodb|redis|elasticsearch", []),
     ]),
@@ -2005,6 +2088,110 @@ def nvd_fetch_vendors() -> list[dict]:
     if not cache.get("items"):
         raise RuntimeError("NVD injoignable")
     return cache["items"]
+
+
+# ── Filet de sécurité : toutes les failles notées 7 ou plus qui touchent une technologie de « Mon parc » ──
+NVD_NET_URL = ("https://services.nvd.nist.gov/rest/json/cves/2.0?{sev}&noRejected"
+               "&pubStartDate={start}&pubEndDate={end}&resultsPerPage=2000")
+NVD_NET_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "nvd_net.json")
+NVD_NET_DAYS = 3
+NVD_NET_MAX = 40          # au plus N failles retenues par interrogation (les mieux notées d'abord)
+NVD_NET_NOISY = {"cms", "php", "java", "db", "m365"}   # trop de petites applications : seulement si cochées dans L3NOX_PARC
+NVD_NET_OTHER_MAX = 25    # failles critiques (9 ou plus) d'autres produits, gardées en P3 pour ne rien laisser passer
+NVD_NET_JUNK = re.compile(r"plugin for wordpress|wordpress plugin|theme for wordpress|sourcecodester|campcodes|"
+                          r"itsourcecode|phpgurukul|code-projects|projectworlds|kashipara|\btenda\b|totolink", re.I)
+
+
+def nvd_net_fetch() -> list[dict]:
+    cache = _load(NVD_NET_FILE)
+    if NOW.timestamp() - cache.get("t", 0) < NVD_EVERY_HOURS * 3600 and "items" in cache:
+        return cache["items"]
+    techs = MY_PARC or [t for t in PARC_RE if t not in NVD_NET_NOISY]
+    fmt = "%Y-%m-%dT%H:%M:%S.000"
+    start = (NOW - timedelta(days=NVD_NET_DAYS)).astimezone(timezone.utc).strftime(fmt)
+    end = NOW.astimezone(timezone.utc).strftime(fmt)
+    found, ok = {}, 0
+    for n, sev in enumerate(("cvssV3Severity=CRITICAL", "cvssV3Severity=HIGH", "cvssV4Severity=CRITICAL",
+                             "cvssV4Severity=HIGH")):
+        if n:
+            time.sleep(6.5)
+        try:
+            data = json.loads(fetch(NVD_NET_URL.format(sev=sev, start=start, end=end), timeout=60))
+            ok += 1
+        except Exception as ex:
+            print(f"[!] NVD filet ({sev}) : {type(ex).__name__}")
+            continue
+        for v in data.get("vulnerabilities") or []:
+            c = v.get("cve") or {}
+            cid = c.get("id", "")
+            if not cid or cid in found:
+                continue
+            desc = next((d.get("value", "") for d in c.get("descriptions") or [] if d.get("lang") == "en"), "")
+            hits = [t for t in techs if PARC_RE[t].search(desc)]
+            sc = nvd_score(c)
+            if not sc or sc["score"] < 7:
+                continue
+            if not hits and (sc["score"] < 9 or NVD_NET_JUNK.search(desc)):
+                continue
+            refs = c.get("references") or []
+            link = next((r.get("url") for r in refs if "Vendor Advisory" in (r.get("tags") or [])), "") \
+                or f"https://nvd.nist.gov/vuln/detail/{cid}"
+            found[cid] = {"source": "NVD (NIST)", "cve": cid, "desc": desc[:600], "date": c.get("published", ""),
+                          "link": safe_url(link), "cvss": sc, "kev": bool(c.get("cisaExploitAdd")),
+                          "tech": PARC_LABEL[hits[0]] if hits else ""}
+    if not ok:
+        _save(NVD_NET_FILE, {"t": NOW.timestamp() - (NVD_EVERY_HOURS - 1) * 3600, "items": cache.get("items", [])})
+        if not cache.get("items"):
+            raise RuntimeError("NVD injoignable")
+        return cache["items"]
+    rows = sorted(found.values(), key=lambda r: -r["cvss"]["score"])
+    items = [r for r in rows if r["tech"]][:NVD_NET_MAX] + [r for r in rows if not r["tech"]][:NVD_NET_OTHER_MAX]
+    _save(NVD_NET_FILE, {"t": NOW.timestamp(), "items": items})
+    return items
+
+
+def collect_nvd_net() -> list[dict]:
+    items = []
+    for r in nvd_net_fetch():
+        date = parse_date(r["date"])
+        if not date or NOW - date > timedelta(days=NVD_NET_DAYS):
+            continue
+        other = not r.get("tech")
+        level = EXPLOITED if r.get("kev") else WATCH if other else CRITICAL if r["cvss"]["score"] >= 9 else WATCH
+        it = make_item("NVD (NIST)", f"{r['tech'] + ' — ' if r.get('tech') else ''}{r['cve']} : {clean(r['desc'], 170)}",
+                       r["link"], date, clean(r["desc"], 400), level, net=other)
+        if r["cve"] not in it["cves"]:
+            it["cves"].insert(0, r["cve"])
+        it["cvss"] = r["cvss"]
+        items.append(it)
+    return items
+
+
+# ── Presse spécialisée, utilisée uniquement comme détecteur : seuls les articles qui citent une CVE ──
+PRESS_CVE_HOURS = 48
+
+
+def collect_press_cves() -> list[dict]:
+    """Articles de presse sécurité qui citent un numéro de CVE (aucune actualité générale)."""
+    cutoff = NOW - timedelta(hours=PRESS_CVE_HOURS)
+    items = []
+    for source, url in NEWS_FEEDS.items():
+        try:
+            entries = parse_feed(fetch(url))
+        except Exception as ex:
+            STATUS.append((source, False, type(ex).__name__))
+            continue
+        n = 0
+        for x in entries:
+            text = f"{x['title']} {x['summary']}"
+            if not x["date"] or x["date"] < cutoff or not x["title"] or not CVE_RE.search(text):
+                continue
+            # La presse ne confirme pas une exploitation : au plus P2, avec la mention dans l'article de l'IA
+            level = CRITICAL if (EXPLOIT_RE.search(text) or CRITICAL_RE.search(text)) else WATCH
+            items.append(make_item(source, x["title"], x["link"], x["date"], x["summary"], level))
+            n += 1
+        STATUS.append((source, True, f"{n} article(s) citant une CVE"))
+    return items
 
 
 def collect_nvd_vendors() -> list[dict]:
@@ -3173,6 +3360,7 @@ def get_posts(entries: list[dict], briefing=None) -> dict:
     cited = {c.upper() for c in CVE_RE.findall((briefing or {}).get("md", "") or "")}
     is_cited = lambda i: bool(cited & set(i["cves"]))
     todo = [i for i in entries if i["date"]
+            and not (i.get("net") and i["level"] <= WATCH and not is_cited(i))
             and ((i["level"] >= WATCH and NOW - i["date"] <= timedelta(days=AI_POSTS_DAYS))
                  or (i["level"] >= WATCH and is_cited(i)))
             and (entry_id(i) not in posts or posts[entry_id(i)].get("level", 0) < i["level"])]
@@ -3709,8 +3897,9 @@ def main(out_dir: str = "_site") -> None:
     kev = safe("CISA KEV", collect_kev)
     cert = collect_cert()
     redhat = safe("Red Hat", collect_redhat)
-    vendors = collect_vendors() + safe("NVD (NIST)", collect_nvd_vendors)
-    ghsa = safe("GitHub Advisory", collect_ghsa)
+    vendors = (collect_vendors() + safe("NVD (NIST)", collect_nvd_vendors)
+               + safe("NVD (filet Mon parc)", collect_nvd_net) + collect_press_cves())
+    ghsa = safe("GitHub Advisory", collect_ghsa) + safe("GitHub Advisory (infra)", collect_ghsa_infra)
     status_rows = collect_status()
     eol = collect_eol()
     news = collect_news() if INCLUDE_PRESS else []
