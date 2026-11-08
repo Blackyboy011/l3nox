@@ -227,6 +227,8 @@ SOURCE_SITES = {
     "Google Chrome": "https://chromereleases.googleblog.com/",
     **NVD_SITES_EARLY,
     "NVD (NIST)": "https://nvd.nist.gov/vuln/search",
+    "IA (articles)": "https://app.netlify.com/",
+    "IA (synthèse)": "https://app.netlify.com/",
     "GitHub Advisory (infra)": "https://github.com/advisories?query=severity%3Ahigh",
     "NVD (filet Mon parc)": "https://nvd.nist.gov/vuln/search",
     "Registre CVE (sévérité)": "https://www.cve.org/",
@@ -251,6 +253,8 @@ SOURCE_DESC = {
     "Atlassian": "Failles Atlassian (Confluence, Jira…) de score 7 ou plus, via la NVD",
     "SAP": "Failles SAP de score 7 ou plus, via la NVD",
     "Microsoft Exchange": "Failles Microsoft Exchange de score 7 ou plus, via la NVD",
+    "IA (articles)": "Rédaction des articles détaillés par l'IA (crédits gratuits Netlify) : bilan du jour",
+    "IA (synthèse)": "Rédaction du briefing du jour par l'IA",
     "NVD (NIST)": "Base américaine des vulnérabilités, interrogée toutes les 6 h pour les éditeurs ci-dessus",
     "NVD (filet Mon parc)": "Filet de sécurité : toutes les failles notées 7 ou plus des 3 derniers jours qui touchent "
                             "une technologie suivie, et les failles critiques (9 ou plus) de tous les autres produits",
@@ -329,13 +333,18 @@ PLAYBOOKS = [
         "id": "openssh", "label": "OpenSSH",
         "match": r"openssh|\bsshd\b",
         "steps": [
-            "Mettre à jour openssh-server et redémarrer sshd.",
-            "Restreindre l'accès SSH (pare-feu, VPN, liste d'IP autorisées) le temps de corriger.",
-            "Vérifier les connexions récentes et les échecs d'authentification.",
+            "Mettre à jour openssh-server vers la version corrigée et redémarrer sshd (sinon l'ancien programme reste actif).",
+            "Ne pas oublier les conteneurs et appliances (images Alpine, OpenWrt, NAS) qui embarquent leur propre sshd.",
+            "En attendant : désactiver l'authentification par mot de passe (PasswordAuthentication no) et restreindre "
+            "l'accès SSH (pare-feu, VPN, liste d'IP autorisées).",
+            "Vérifier les connexions récentes (« Accepted password », comptes inhabituels, clés ajoutées dans authorized_keys).",
         ],
         "cmds": {
             "RHEL / Rocky / Alma": "ssh -V && rpm -q openssh-server\nsudo dnf upgrade --refresh 'openssh*'\nsudo systemctl restart sshd\nsudo journalctl -u sshd --since today | grep -Ei 'failed|invalid' | tail",
             "Debian / Ubuntu": "ssh -V && dpkg -l openssh-server\nsudo apt update && sudo apt install --only-upgrade openssh-server\nsudo systemctl restart ssh",
+            "Alpine (et conteneurs Alpine)": "ssh -V\napk update && apk upgrade openssh\nrc-service sshd restart\ngrep 'Accepted password' /var/log/messages | tail",
+            "Conteneurs Docker : repérer les images Alpine": "for c in $(docker ps -q); do echo \"$(docker inspect -f '{{.Name}}' $c) : $(docker exec $c sh -c '. /etc/os-release 2>/dev/null; echo $PRETTY_NAME')\"; done",
+            "Désactiver le mot de passe en attendant": "grep -Ei '^\\s*PasswordAuthentication' /etc/ssh/sshd_config\n# mettre : PasswordAuthentication no   puis redémarrer sshd",
         },
     },
     {
@@ -705,7 +714,40 @@ def collect_cert() -> list[dict]:
             items.append(make_item(f"CERT-FR {kind}", e["title"], e["link"], e["date"], e["summary"], level))
             n += 1
         STATUS.append((name, True, f"{n} élément(s)"))
+    try:   # numéros de CVE de chaque avis (le flux RSS ne les donne pas) : sévérité, EPSS, regroupement
+        cert_cves(items)
+    except Exception as ex:
+        print(f"[!] CERT-FR (CVE des avis) : {type(ex).__name__}")
     return items
+
+
+CERT_CVE_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "cert_cves.json")
+CERT_CVE_PER_RUN = 30
+
+
+def cert_cves(items: list[dict]) -> None:
+    """Lit la version JSON de chaque bulletin CERT-FR (…/CERTFR-AAAA-AVI-NNNN/json/) pour récupérer ses CVE."""
+    cache, asked = _load(CERT_CVE_FILE), 0
+    for it in sorted(items, key=lambda i: -i["level"]):
+        ref = re.search(r"CERTFR-\d{4}-(?:AVI|ALE)-\d+", it["link"] or "")
+        if not ref:
+            continue
+        key = ref.group(0)
+        if key not in cache and asked < CERT_CVE_PER_RUN:
+            asked += 1
+            base = it["link"].split(key)[0] + key + "/"
+            try:
+                data = json.loads(fetch(base + "json/", timeout=15))
+                found = [c.get("name", "") for c in data.get("cves") or [] if isinstance(c, dict)]
+                found += CVE_RE.findall(json.dumps(data.get("content", "") or "")) if not found else []
+                cache[key] = {"t": NOW.timestamp(), "cves": list(dict.fromkeys(c.upper() for c in found if CVE_RE.fullmatch(c)))}
+            except Exception:
+                continue
+        for c in (cache.get(key) or {}).get("cves", [])[:6]:   # 6 au plus : assez pour la sévérité, sans fusionner trop large
+            if c not in it["cves"]:
+                it["cves"].append(c)
+    keep = NOW.timestamp() - 120 * 86400
+    _save(CERT_CVE_FILE, {k: v for k, v in cache.items() if v.get("t", 0) >= keep})
 
 
 def collect_redhat() -> list[dict]:
@@ -2387,13 +2429,39 @@ def sources_links(it: dict) -> list[str]:
     return out
 
 
+# Familles de systèmes : on n'affiche que les commandes du système visé par l'alerte
+# (une alerte « noyau Linux de Debian » ne doit pas proposer de commandes Red Hat, et inversement).
+OS_FAMILIES = {
+    "rhel": (re.compile(r"red ?hat|\brhel\b|rocky|alma ?linux|centos|fedora|oracle linux", re.I), {"Red Hat"}, r"rhel|rocky|alma"),
+    "debian": (re.compile(r"debian|ubuntu", re.I), {"Debian", "Ubuntu"}, r"debian|ubuntu"),
+    "windows": (re.compile(r"windows", re.I), {"Microsoft MSRC"}, r"windows"),
+    "suse": (re.compile(r"suse|sles", re.I), set(), r"suse"),
+    "alpine": (re.compile(r"alpine|\bmusl\b|openwrt", re.I), set(), r"alpine"),
+}
+
+
+def cmds_for(it: dict, cmds: dict) -> dict:
+    """Garde seulement les commandes du (ou des) système(s) cité(s) par l'alerte ; toutes si aucun n'est cité."""
+    sources = {it.get("source", "")} | {a.get("source", "") for a in it.get("also", [])}
+    text = " ".join([it.get("title", ""), it.get("summary", "")] + [a.get("title", "") for a in it.get("also", [])])
+    fams = [f for f, (rx, srcs, _) in OS_FAMILIES.items() if (srcs & sources) or rx.search(text)]
+    if not fams:
+        return cmds
+    keep = {}
+    for name, code in cmds.items():
+        owner = [f for f, (_, _, key) in OS_FAMILIES.items() if re.search(key, name, re.I)]
+        if not owner or set(owner) & set(fams):   # commande neutre (Docker, ESXi…) ou du bon système
+            keep[name] = code
+    return keep or cmds
+
+
 def todo_html(it: dict, with_steps: bool) -> str:
     pb = PB_BY_ID.get(it["playbook"]) if it["playbook"] else None
     if not pb or it["level"] <= INFO:
         return ""
     steps = ("<ol class=\"steps-in\">" + "".join(f"<li>{e(x)}</li>" for x in pb["steps"]) + "</ol>") if with_steps else ""
     cmds = "".join(f'<p class="os">{e(name)}</p><div class="code"><pre><code>{e(code)}</code></pre>'
-                   f'<button class="copy" type="button">Copier</button></div>' for name, code in pb["cmds"].items())
+                   f'<button class="copy" type="button">Copier</button></div>' for name, code in cmds_for(it, pb["cmds"]).items())
     if not steps and not cmds:
         return ""
     label = "Que faire" if with_steps else "Commandes utiles"
@@ -2480,7 +2548,7 @@ def measures_html(it: dict) -> str:
             ("Échéance CISA", due_fr(it["due"]) if it.get("due") else "aucune")]
     table = "".join(f"<tr><th>{e(k)}</th><td>{e(v)}</td></tr>" for k, v in rows)
     cmds = "".join(f'<p class="os">{e(name)}</p><div class="code"><pre><code>{e(code)}</code></pre>'
-                   f'<button class="copy" type="button">Copier</button></div>' for name, code in (pb["cmds"].items() if pb else []))
+                   f'<button class="copy" type="button">Copier</button></div>' for name, code in (cmds_for(it, pb["cmds"]).items() if pb else []))
     srcs = " · ".join(sources_links(it))
     return ('<details class="todo-in more-fb"><summary>Mesures SysOps</summary>'
             f'<table class="fb-tab">{table}</table>'
@@ -3164,6 +3232,13 @@ def ai_call(prompt: str) -> dict:
     return {"md": text, "truncated": truncated}
 
 
+def urgent_key(it: dict) -> str:
+    """Identifiant + empreinte du titre et du résumé : une alerte mise à jour ([MàJ]) compte comme du nouveau."""
+    import hashlib
+    h = hashlib.sha1(f"{it['title']}|{it['summary'][:300]}".encode("utf-8")).hexdigest()[:8]
+    return f"{entry_id(it)}#{h}"
+
+
 def get_briefing(entries: list[dict], eol: list[dict], status_rows: list[dict]):
     """Renvoie la synthèse (nouvelle ou en cache), ou None si l'IA n'est pas configurée."""
     try:
@@ -3185,7 +3260,7 @@ def get_briefing(entries: list[dict], eol: list[dict], status_rows: list[dict]):
         gen = datetime.fromisoformat(cached["generated"])
         age_h = (NOW - gen).total_seconds() / 3600
         same_day = gen.astimezone(PARIS).date() == NOW.astimezone(PARIS).date()
-        urgent = {entry_id(i) for i in entries if i["level"] >= CRITICAL}
+        urgent = {urgent_key(i) for i in entries if i["level"] >= CRITICAL}
         new_urgent = bool(urgent - set(cached.get("urgent", cached.get("p1", []))))
         cs = credits_status()
         if same_day:   # déjà une synthèse aujourd'hui : mise à jour seulement si du nouveau important et du budget
@@ -3199,6 +3274,7 @@ def get_briefing(entries: list[dict], eol: list[dict], status_rows: list[dict]):
             why = f"rédaction à partir de {AI_WINDOW[0]} h"
         if not fresh:
             print(f"[ok] Synthèse IA : réutilisée (rédigée il y a {age_h:.1f} h, {why}).")
+            STATUS.append(("IA (synthèse)", True, f"rédigée le {gen.astimezone(PARIS).strftime('%d/%m à %H:%M')} ({why})"))
             return cached
         if cs["left_month"] <= 0.5:
             print("[--] Synthèse IA : budget de crédits du mois épuisé, précédente réutilisée.")
@@ -3210,6 +3286,7 @@ def get_briefing(entries: list[dict], eol: list[dict], status_rows: list[dict]):
         data = ai_call(ai_input(entries, eol, status_rows))
     except Exception as e:
         print(f"[!!] Synthèse IA : échec ({type(e).__name__}: {e}).")
+        STATUS.append(("IA (synthèse)", False, f"échec de la rédaction : {type(e).__name__}: {str(e)[:160]}"))
         stub = dict(cached or {})  # on compte l'essai (même raté) pour respecter les plafonds
         stub["calls"] = dict(counts, **{today: n_day + 1})
         os.makedirs(os.path.dirname(BRIEF_FILE) or ".", exist_ok=True)
@@ -3218,13 +3295,14 @@ def get_briefing(entries: list[dict], eol: list[dict], status_rows: list[dict]):
         return cached
     counts[today] = n_day + 1
     counts = {k: v for k, v in counts.items() if k >= (NOW - timedelta(days=62)).strftime("%Y-%m-%d")}
-    out = {"sig": sig, "p1": sorted(p1), "urgent": sorted({entry_id(i) for i in entries if i["level"] >= CRITICAL}),
+    out = {"sig": sig, "p1": sorted(p1), "urgent": sorted({urgent_key(i) for i in entries if i["level"] >= CRITICAL}),
            "generated": NOW.isoformat(), "model": AI_MODEL, **data,
            "calls": counts}
     os.makedirs(os.path.dirname(BRIEF_FILE) or ".", exist_ok=True)
     with open(BRIEF_FILE, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False)
     print("[ok] Synthèse IA : nouvelle rédaction.")
+    STATUS.append(("IA (synthèse)", True, f"rédigée le {NOW.astimezone(PARIS).strftime('%d/%m à %H:%M')}"))
     return out
 
 
@@ -3352,7 +3430,9 @@ def get_posts(entries: list[dict], briefing=None) -> dict:
     except (OSError, ValueError):
         store = {}
     posts, calls = store.get("posts", {}), store.get("calls", {})
+    fails = store.get("fails", {})   # alertes dont la rédaction a échoué : {id: {"n": essais, "t": horodatage, "err": …}}
     if not ((AI_URL and AI_SECRET) or AI_KEY):
+        STATUS.append(("IA (articles)", False, "service IA non configuré (variable L3NOX_AI_URL absente)"))
         return posts
     today, month = NOW.strftime("%Y-%m-%d"), NOW.strftime("%Y-%m")
     n_day = calls.get(today, 0)
@@ -3364,17 +3444,26 @@ def get_posts(entries: list[dict], briefing=None) -> dict:
             and ((i["level"] >= WATCH and NOW - i["date"] <= timedelta(days=AI_POSTS_DAYS))
                  or (i["level"] >= WATCH and is_cited(i)))
             and (entry_id(i) not in posts or posts[entry_id(i)].get("level", 0) < i["level"])]
-    todo.sort(key=lambda i: (not is_cited(i), -i["level"], -i["date"].timestamp()))
+    now_s = NOW.timestamp()
+
+    def paused(i):   # après un échec : nouvel essai 6 h plus tard, abandon (fiche gardée) après 3 échecs
+        f = fails.get(entry_id(i))
+        return bool(f) and (f.get("n", 0) >= 3 or now_s - f.get("t", 0) < 6 * 3600)
+    skipped = sum(1 for i in todo if paused(i))
+    todo = [i for i in todo if not paused(i)]
+    todo.sort(key=lambda i: (-i["level"], not is_cited(i), -i["date"].timestamp()))   # P1 toujours en premier
     # tant que la synthèse du jour n'est pas rédigée, on lui garde sa part du budget
     gen = (briefing or {}).get("generated")
     reserve = 0.0 if gen and datetime.fromisoformat(gen).astimezone(PARIS).date() == NOW.astimezone(PARIS).date() else 0.8
     written = failed = 0
+    last_err, budget_stop = "", False
     for it in todo:
         if written + failed >= AI_POSTS_PER_RUN or n_day >= AI_POSTS_PER_DAY or n_month >= AI_POSTS_PER_MONTH:
             break
         cs = credits_status()
         if cs["left_today"] - reserve < 0.3 or cs["left_month"] - reserve < 0.3:
             print(f"[--] Articles IA : budget du jour atteint ({cs['today']:.2f} / {cs['allowance']:.2f} crédits).")
+            budget_stop = True
             break
         n_day += 1
         n_month += 1
@@ -3382,8 +3471,14 @@ def get_posts(entries: list[dict], briefing=None) -> dict:
             post = parse_post(ai_text(POST_SYSTEM, post_prompt(it), 1500))
         except Exception as ex:
             failed += 1
-            print(f"[!!] Article IA : échec pour {entry_id(it)} ({type(ex).__name__}: {ex}).")
+            f = fails.get(entry_id(it), {})
+            fails[entry_id(it)] = {"n": f.get("n", 0) + 1, "t": now_s, "err": f"{type(ex).__name__}: {ex}"[:200]}
+            last_err = fails[entry_id(it)]["err"]
+            print(f"[!!] Article IA : échec pour {entry_id(it)} ({last_err}).")
+            if failed >= 3 and not written:   # le service semble en panne : inutile de dépenser plus ce passage
+                break
             continue
+        fails.pop(entry_id(it), None)
         post.update(level=it["level"], generated=NOW.isoformat())
         posts[entry_id(it)] = post
         written += 1
@@ -3393,8 +3488,21 @@ def get_posts(entries: list[dict], briefing=None) -> dict:
     calls = {k: v for k, v in calls.items() if k >= (NOW - timedelta(days=62)).strftime("%Y-%m-%d")}
     os.makedirs(os.path.dirname(POSTS_FILE) or ".", exist_ok=True)
     with open(POSTS_FILE, "w", encoding="utf-8") as f:
-        json.dump({"posts": posts, "calls": calls}, f, ensure_ascii=False)
+        json.dump({"posts": posts, "calls": calls,
+                   "fails": {k: v for k, v in fails.items() if now_s - v.get("t", 0) < 7 * 86400},
+                   "runs": (store.get("runs") or [])[-40:] + [{"t": NOW.isoformat(), "w": written, "f": failed}]},
+                  f, ensure_ascii=False)
     left = max(0, len(todo) - written)
+    # bilan visible dans « État du parc → Sources », pour suivre l'IA sans ouvrir GitHub
+    day_runs = [r for r in (store.get("runs") or []) if r.get("t", "")[:10] == NOW.strftime("%Y-%m-%d")]
+    w_day = sum(r.get("w", 0) for r in day_runs) + written
+    f_day = sum(r.get("f", 0) for r in day_runs) + failed
+    cs0 = credits_status()
+    detail = (f"{w_day} article(s) rédigé(s) aujourd'hui, {f_day} échec(s), {left + skipped} en attente ; crédits : "
+              f"{cs0['today']:.1f} / {cs0['allowance']:.1f} aujourd'hui, {cs0['month']:.0f} / {AI_CREDIT_BUDGET:.0f} ce mois-ci"
+              + (" ; budget du jour atteint" if budget_stop else "")
+              + (f" ; dernière erreur : {last_err}" if last_err else ""))
+    STATUS.append(("IA (articles)", f_day == 0 or w_day > 0, detail))
     print(f"[ok] Articles IA : {written} rédigé(s), {failed} échec(s), {len(posts)} en mémoire"
           + (f", {left} en attente (rédigés aux prochains passages)" if left else "") + ".")
     cs = credits_status()
