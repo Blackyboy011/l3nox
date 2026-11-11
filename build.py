@@ -269,7 +269,7 @@ SOURCE_DESC = {
     "Palo Alto": "Avis de sécurité de l'éditeur (PAN-OS, GlobalProtect…)",
     "Cisco PSIRT": "Avis de sécurité de l'éditeur (ASA, FTD, IOS, SD-WAN…)",
     "Fortinet PSIRT": "Avis de sécurité de l'éditeur (FortiOS, FortiGate…)",
-    "Microsoft MSRC": "Guide des mises à jour de sécurité Microsoft",
+    "Microsoft MSRC": "Bulletin de sécurité mensuel de Microsoft (Patch Tuesday), trié par gravité et état d'exploitation",
     "Cisco Talos": "Recherches et campagnes d'attaque (renseignement sur la menace)",
     "Kubernetes": "Flux officiel des CVE Kubernetes",
     "GitLab": "Versions de sécurité de GitLab",
@@ -852,6 +852,136 @@ def collect_ghsa() -> list[dict]:
 
 
 RESOLVED_RE = re.compile(r"\bresolved\b|\bcompleted\b|résolu|operating normally|has been mitigated", re.I)
+
+
+# ═════════════════════ Microsoft : Patch Tuesday trié par gravité ═════════════════════
+# Le flux RSS de Microsoft liste jusqu'à mille failles sans ordre d'importance. On lit à la place le bulletin
+# mensuel officiel (API MSRC « CVRF »), qui donne pour chaque faille : gravité, impact, score et état d'exploitation.
+#   P1 : exploitée · P2 : divulguée publiquement, ou critique (avec exploitation probable ou score ≥ 9)
+#   P3 : importante avec « exploitation plus probable » (les mieux notées) · le reste est résumé dans une fiche unique
+MSRC_CVRF = "https://api.msrc.microsoft.com/cvrf/v3.0/cvrf/{ym}"
+MSRC_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "msrc.json")
+MSRC_EVERY_HOURS = 3
+MSRC_DAYS = 8            # un bulletin reste affiché 8 jours
+MSRC_P2_MAX, MSRC_P3_MAX = 20, 12
+MSRC_IMPACT = {"remote code execution": "exécution de code à distance", "elevation of privilege": "élévation de privilèges",
+               "information disclosure": "divulgation d'informations", "denial of service": "déni de service",
+               "spoofing": "usurpation", "security feature bypass": "contournement d'une protection",
+               "tampering": "altération de données"}
+MSRC_SEV = {"critical": "Critique", "important": "Importante", "moderate": "Modérée", "low": "Faible"}
+MOIS_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def _msrc_parse(doc: dict) -> list[dict]:
+    rows = []
+    for v in doc.get("Vulnerability") or []:
+        cve = str(v.get("CVE") or "")
+        if not CVE_RE.fullmatch(cve):
+            continue
+        sev = impact = status = ""
+        for t in v.get("Threats") or []:
+            val = str((t.get("Description") or {}).get("Value") or "")
+            ty = t.get("Type")
+            if ty == 3 and not sev:
+                sev = val.strip().lower()
+            elif ty == 0 and not impact:
+                impact = val.strip().lower()
+            elif ty == 1 and "exploited" in val.lower():
+                status = val
+        st = {k.strip().lower(): x.strip() for k, x in (p.split(":", 1) for p in status.split(";") if ":" in p)}
+        scores = []
+        for c in v.get("CVSSScoreSets") or []:
+            try:
+                scores.append(float(c.get("BaseScore")))
+            except (TypeError, ValueError):
+                pass
+        tag = next((str(n.get("Value") or "") for n in v.get("Notes") or [] if n.get("Type") == 7), "")
+        dates = sorted(str(r.get("Date") or "") for r in v.get("RevisionHistory") or [] if r.get("Date"))
+        rows.append({"cve": cve.upper(), "title": clean(str((v.get("Title") or {}).get("Value") or ""), 200),
+                     "sev": sev, "impact": impact, "score": max(scores) if scores else 0.0, "tag": clean(tag, 80),
+                     "exploited": st.get("exploited", "").lower() == "yes",
+                     "public": st.get("publicly disclosed", "").lower() == "yes",
+                     "likely": "more likely" in st.get("latest software release", "").lower(),
+                     "date": dates[0] if dates else ""})
+    return rows
+
+
+def msrc_fetch() -> list[dict]:
+    cache = _load(MSRC_FILE)
+    if NOW.timestamp() - cache.get("t", 0) < MSRC_EVERY_HOURS * 3600 and "rows" in cache:
+        return cache["rows"]
+    months = [NOW, NOW - timedelta(days=MSRC_DAYS)]
+    ids = list(dict.fromkeys(f"{d.year}-{MOIS_EN[d.month - 1]}" for d in months))
+    rows, ok = [], 0
+    for ym in ids:
+        try:
+            doc = json.loads(fetch(MSRC_CVRF.format(ym=ym), timeout=120, headers={"Accept": "application/json"}))
+            rows += _msrc_parse(doc)
+            ok += 1
+        except Exception as ex:
+            print(f"[!] Microsoft bulletin {ym} : {type(ex).__name__}")
+    if not ok:
+        if "rows" in cache:
+            return cache["rows"]
+        raise RuntimeError("bulletin Microsoft injoignable")
+    _save(MSRC_FILE, {"t": NOW.timestamp(), "rows": rows})
+    return rows
+
+
+def collect_msrc() -> list[dict]:
+    rows = [r for r in msrc_fetch() if parse_date(r["date"]) and NOW - parse_date(r["date"]) <= timedelta(days=MSRC_DAYS)]
+    rows.sort(key=lambda r: (-r["exploited"], -r["public"], -(r["sev"] == "critical"), -r["likely"], -r["score"]))
+    p1 = [r for r in rows if r["exploited"]]
+    p2 = [r for r in rows if not r["exploited"] and (r["public"] or (r["sev"] == "critical" and (r["likely"] or r["score"] >= 9)))]
+    p2 += [r for r in rows if r not in p1 and r not in p2 and r["score"] >= 9.5]
+    p2 = p2[:MSRC_P2_MAX]
+    p3 = [r for r in rows if r not in p1 and r not in p2 and (r["sev"] == "critical" or (r["likely"] and r["score"] >= 7.5))][:MSRC_P3_MAX]
+    items = []
+
+    def add(r, level):
+        bits = [f"Gravité Microsoft : {MSRC_SEV.get(r['sev'], 'non précisée')}",
+                f"Impact : {MSRC_IMPACT.get(r['impact'], r['impact'] or 'non précisé')}",
+                "Exploitation : " + ("constatée" if r["exploited"] else "plus probable" if r["likely"] else "moins probable")
+                + (" · détails publics" if r["public"] else "")]
+        if r["tag"]:
+            bits.insert(0, f"Composant : {r['tag']}")
+        name = re.sub(r"\s*(remote code execution|elevation of privilege|information disclosure|denial of service|spoofing|"
+                      r"security feature bypass|tampering)?\s*vulnerability\s*$", "", r["title"], flags=re.I).strip() or r["title"]
+        fr = MSRC_IMPACT.get(r["impact"], "")
+        it = make_item("Microsoft MSRC", f"{r['cve']} {name}" + (f" — {fr}" if fr else ""),
+                       f"https://msrc.microsoft.com/update-guide/vulnerability/{r['cve']}", parse_date(r["date"]),
+                       " · ".join(bits), level)
+        if r["cve"] not in it["cves"]:
+            it["cves"].insert(0, r["cve"])
+        if r["score"]:
+            it["cvss"] = {"score": r["score"], "src": "Microsoft"}
+        if r["exploited"]:
+            it["action"] = "Appliquer en priorité la mise à jour de sécurité Microsoft du mois."
+        items.append(it)
+    for r in p1:
+        add(r, EXPLOITED)
+    for r in p2:
+        add(r, CRITICAL)
+    for r in p3:
+        add(r, WATCH)
+    if rows:   # fiche unique qui résume tout le bulletin
+        day = max(parse_date(r["date"]) for r in rows)
+        n_crit = sum(1 for r in rows if r["sev"] == "critical")
+        n_rce = sum(1 for r in rows if r["impact"] == "remote code execution")
+        top = [f"{r['cve']} ({r['tag'] or r['title'][:40]}, {MSRC_IMPACT.get(r['impact'], r['impact'])}"
+               + (f", CVSS {r['score']:.1f}" if r["score"] else "") + ")" for r in (p1 + p2)[:12]]
+        summary = (f"{len(rows)} failles corrigées par Microsoft : {n_crit} critiques, {n_rce} exécutions de code à "
+                   f"distance, {len(p1)} déjà exploitée(s), {sum(1 for r in rows if r['likely'])} à exploitation plus "
+                   f"probable. À traiter en premier : " + " ; ".join(top) + ".")
+        it = make_item("Microsoft MSRC", f"Patch Tuesday Microsoft — {MOIS[day.month - 1]} {day.year} : {len(rows)} failles, "
+                       f"{n_crit} critiques, {len(p1)} exploitée(s)", "https://msrc.microsoft.com/update-guide/releaseNote/"
+                       f"{day.year}-{MOIS_EN[day.month - 1]}", day, summary, CRITICAL)
+        it["cves"] = []          # fiche de synthèse : ne pas la fusionner avec une faille en particulier
+        it["summary"] = summary  # résumé complet (pas de coupe)
+        items.append(it)
+    STATUS.append(("Microsoft MSRC", True, f"{len(rows)} failles dans le bulletin en cours : {len(p1)} en P1, {len(p2)} en P2, "
+                                           f"{len(p3)} en P3, le reste résumé dans la fiche Patch Tuesday"))
+    return items
 
 
 def collect_ghsa_infra() -> list[dict]:
@@ -3502,6 +3632,10 @@ def get_posts(entries: list[dict], briefing=None) -> dict:
               f"{cs0['today']:.1f} / {cs0['allowance']:.1f} aujourd'hui, {cs0['month']:.0f} / {AI_CREDIT_BUDGET:.0f} ce mois-ci"
               + (" ; budget du jour atteint" if budget_stop else "")
               + (f" ; dernière erreur : {last_err}" if last_err else ""))
+    if not last_err and fails:   # dernière erreur connue, même si elle date d'un passage précédent
+        lf = max(fails.values(), key=lambda v: v.get("t", 0))
+        detail += (f" ; dernière erreur ({datetime.fromtimestamp(lf.get('t', 0), PARIS).strftime('%d/%m %H:%M')}) : "
+                   f"{lf.get('err', '?')}")
     STATUS.append(("IA (articles)", f_day == 0 or w_day > 0, detail))
     print(f"[ok] Articles IA : {written} rédigé(s), {failed} échec(s), {len(posts)} en mémoire"
           + (f", {left} en attente (rédigés aux prochains passages)" if left else "") + ".")
@@ -4007,6 +4141,11 @@ def main(out_dir: str = "_site") -> None:
     redhat = safe("Red Hat", collect_redhat)
     vendors = (collect_vendors() + safe("NVD (NIST)", collect_nvd_vendors)
                + safe("NVD (filet Mon parc)", collect_nvd_net) + collect_press_cves())
+    try:   # Microsoft : bulletin mensuel trié par gravité (remplace les 10 avis pris au hasard dans le flux RSS)
+        msrc = collect_msrc()
+        vendors = [v for v in vendors if v["source"] != "Microsoft MSRC"] + msrc
+    except Exception as ex:
+        print(f"[!] Microsoft (bulletin mensuel) : {ex} ; flux RSS conservé.")
     ghsa = safe("GitHub Advisory", collect_ghsa) + safe("GitHub Advisory (infra)", collect_ghsa_infra)
     status_rows = collect_status()
     eol = collect_eol()
