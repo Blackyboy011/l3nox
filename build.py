@@ -268,6 +268,7 @@ SOURCE_SITES = {
     **NVD_SITES_EARLY,
     "NVD (NIST)": "https://nvd.nist.gov/vuln/search",
     "Pannes (presse)": "https://news.google.com/search?q=panne%20Microsoft%20OR%20AWS%20OR%20Cloudflare",
+    "Radar (événements majeurs)": "https://news.google.com/",
     "IA (articles)": "https://app.netlify.com/",
     "IA (synthèse)": "https://app.netlify.com/",
     "GitHub Advisory (infra)": "https://github.com/advisories?query=severity%3Ahigh",
@@ -294,6 +295,9 @@ SOURCE_DESC = {
     "Atlassian": "Failles Atlassian (Confluence, Jira…) de score 7 ou plus, via la NVD",
     "SAP": "Failles SAP de score 7 ou plus, via la NVD",
     "Microsoft Exchange": "Failles Microsoft Exchange de score 7 ou plus, via la NVD",
+    "Radar (événements majeurs)": "Zero-day, attaques de fournisseurs, mises à jour défectueuses, correctifs d'urgence, fuites, "
+                                  "pannes géantes : sujets relayés par plusieurs médias (une trentaine de sites lus "
+                                  "directement, plus Google Actualités et Bing), triés par l'IA",
     "Pannes (presse)": "Grandes pannes de services (Microsoft 365, Google, AWS, OVH…) relayées par au moins 3 médias en 24 h",
     "IA (articles)": "Rédaction des articles détaillés par l'IA (crédits gratuits Netlify) : bilan du jour",
     "IA (synthèse)": "Rédaction du briefing du jour par l'IA",
@@ -1088,18 +1092,11 @@ INCIDENT_ID_RE = re.compile(r"\b(?:EX|MO|TM|SP|OD|DZ|CP|MV|IT|PB|FL|LY)\d{6,8}\b
 
 def collect_outages(rows: list[dict]) -> None:
     """Ajoute aux pages d'état les grandes pannes relayées par plusieurs médias (Google Actualités + presse spécialisée)."""
-    cutoff = NOW - timedelta(hours=STATUS_HOURS)
-    arts, ok = [], 0
-    for url in OUTAGE_NEWS + list(NEWS_FEEDS.values()):
-        try:
-            for x in parse_feed(fetch(url, timeout=20)):
-                if x["date"] and x["date"] >= cutoff and x["title"] and OUTAGE_RE.search(x["title"]):
-                    title, _, pub = x["title"].rpartition(" - ") if " - " in x["title"] and "news.google" in url else (x["title"], "", url.split("/")[2])
-                    arts.append({"title": clean(title, 160), "pub": pub.strip().lower(), "date": x["date"],
-                                 "link": safe_url(x["link"]), "ids": INCIDENT_ID_RE.findall(f"{x['title']} {x['summary']}")})
-            ok += 1
-        except Exception:
-            continue
+    pool = press_pool()
+    ok = pool["ok"]
+    arts = [{"title": a["title"], "pub": a["pub"].strip().lower(), "date": a["date"], "link": a["link"],
+             "ids": INCIDENT_ID_RE.findall(f"{a['title']} {a.get('summary', '')}")}
+            for a in pool["arts"] if OUTAGE_RE.search(a["title"])]
     by_name = {r["name"]: r for r in rows}
     found = []
     for svc, rx in OUTAGE_SERVICES.items():
@@ -1146,7 +1143,7 @@ def notify_outages(rows: list[dict]) -> None:
             continue   # premier passage : on mémorise sans notifier
         try:
             ntfy(f"🟠 Panne en cours · {r['name']}", opened[0]["title"],
-                 f"https://{SITE_DOMAIN}/etat.html#services" if SITE_DOMAIN else opened[0]["link"], 4, ["warning"])
+                 f"https://{SITE_DOMAIN}/pannes.html" if SITE_DOMAIN else opened[0]["link"], 4, ["warning"])
         except Exception as ex:
             print(f"[!!] Notification de panne : {ex}")
             del seen[key]
@@ -1176,9 +1173,16 @@ OUTAGE_TIPS = {
 }
 
 
-def outage_banner_html(rows: list[dict]) -> str:
-    """Bandeau bien visible, en haut du bulletin et de l'état du parc, quand une panne est en cours."""
-    open_rows = [r for r in rows if any(not i["resolved"] for i in r["incidents"])]
+OUTAGE_MAJOR_PUBS = 5   # panne « majeure » : relayée par au moins 5 médias
+
+
+def is_major(r: dict) -> bool:
+    return any(not i["resolved"] and i.get("press", 0) >= OUTAGE_MAJOR_PUBS for i in r["incidents"])
+
+
+def outage_banner_html(rows: list[dict], major_only: bool = False) -> str:
+    """Cartes de panne. Accueil : pannes majeures seulement. Onglet Pannes : toutes les pannes en cours."""
+    open_rows = [r for r in rows if any(not i["resolved"] for i in r["incidents"]) and (is_major(r) or not major_only)]
     if not open_rows:
         return ""
     # les pannes les plus relayées d'abord
@@ -1187,7 +1191,7 @@ def outage_banner_html(rows: list[dict]) -> str:
     for r in open_rows:
         inc = next(i for i in r["incidents"] if not i["resolved"])
         n = inc.get("press", 0)
-        major = n >= 5
+        major = n >= OUTAGE_MAJOR_PUBS
         since = min(i["date"] for i in r["incidents"] if not i["resolved"])
         badge = "Panne majeure en cours" if major else "Panne en cours"
         origin = f"relayée par {n} médias" if n else "page d'état officielle"
@@ -1460,6 +1464,20 @@ pre{font-size:13px}
 """.replace("%DARK%", DARK_TOKENS)
 
 CSS_EXTRA = """
+/* À la une : événements majeurs */
+.radar{margin:22px 0 4px}
+.radar-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.radar-card{background:var(--sheet);border:1px solid var(--rule);border-top:4px solid var(--p3);border-radius:12px;padding:12px 16px 10px}
+.radar-card.imp3{border-top-color:var(--p1)}.radar-card.imp2{border-top-color:var(--p2)}
+.r-top{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;margin:0 0 6px}
+.r-cat{font:800 12.5px/1.6 var(--body);letter-spacing:.05em;text-transform:uppercase;border-radius:5px;padding:0 8px;
+color:var(--ontag,#fff);background:var(--p2)}.imp3 .r-cat{background:var(--p1)}.imp1 .r-cat{background:var(--muted)}
+.r-meta{font-size:13.5px;color:var(--muted)}
+.radar-card h3{margin:0 0 6px;font:700 18px/1.3 var(--display)}
+.r-sum{margin:0 0 6px;font-size:15.5px}.r-prods{margin:0 0 6px}
+.r-prod{display:inline-block;font:600 12.5px/1.5 var(--body);border:1px solid var(--rule);border-radius:999px;padding:0 8px;margin:0 5px 4px 0}
+.r-src{margin:0;font-size:14px;color:var(--muted)}.r-note{font-size:13.5px;color:var(--muted);margin:8px 0 0;font-style:italic}
+
 /* Pannes en cours : bandeau bien visible */
 .outages{display:grid;gap:12px;margin:22px 0 6px}
 .outage{border:2px solid var(--p2);border-left-width:10px;border-radius:12px;padding:14px 18px 10px;
@@ -1932,7 +1950,8 @@ def sync_html() -> str:
 
 
 def nav_html(active: str = "") -> str:
-    links = [("./", "Bulletin", "home"), ("etat.html", "État du parc", "state"), ("archives.html", "Archives", "archives"),
+    links = [("./", "Bulletin", "home"), ("pannes.html", "Pannes", "outages"), ("etat.html", "État du parc", "state"),
+             ("archives.html", "Archives", "archives"),
              ("a-propos.html", "À propos", "about")]
     return '<nav class="nav" aria-label="Menu">' + "".join(
         f'<a href="{h}"{" aria-current=\"page\"" if k == active else ""}>{t}</a>' for h, t, k in links) + "</nav>"
@@ -2978,7 +2997,7 @@ def panorama_html(entries: list[dict], eol: list[dict], status_rows: list[dict])
              (f"Incidents résolus : {', '.join(solved)}" if solved else "Aucune panne signalée"))
     badge = '<span class="mini lv3">panne</span>' if outages else '<span class="calm">RAS</span>'
     out.append(f'<li><span class="dn">Cloud et services en ligne</span><span class="cnt">{badge}</span>'
-               f'<span class="det"><a href="#services">{e(cloud)}</a></span></li>')
+               f'<span class="det"><a href="pannes.html">{e(cloud)}</a></span></li>')
     return f'<ul class="pano">{"".join(out)}</ul>'
 
 
@@ -3263,8 +3282,12 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
         level, band = "RAS", "ras"
         headline = "Rien de critique à traiter aujourd'hui."
         lede = "Bon moment pour avancer sur les mises à jour courantes."
-    facts = [f'<li class="down"><a href="etat.html#services">Panne en cours : {e(", ".join(outages))}</a></li>' if outages
-             else '<li class="good">Aucune panne en cours sur les services suivis</li>',
+    majors = [r["name"] for r in status_rows if is_major(r)]
+    minors = [x for x in outages if x not in majors]
+    facts = ([f'<li class="down"><a href="pannes.html">Panne majeure : {e(", ".join(majors))}</a></li>'] if majors else []) + \
+            ([f'<li><a href="pannes.html">{plural(len(minors), "autre panne en cours", "autres pannes en cours") if majors else plural(len(minors), "panne en cours", "pannes en cours")}'
+              f' : {e(", ".join(minors))}</a></li>'] if minors else []) + \
+            ([] if outages else ['<li class="good">Aucune panne en cours sur les services suivis</li>']) + [
              f"<li>{plural(n_watch, 'avis à surveiller', 'avis à surveiller')}</li>"]
     if KEV_META.get("count"):
         kev_txt = f"Catalogue CISA : {KEV_META['count']:,} failles exploitées connues".replace(",", " ")
@@ -3312,7 +3335,8 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
 <div><h1>{e(headline)}</h1><p class="lede">{e(lede)}</p><ul class="facts">{"".join(facts)}</ul></div></div>
 </div></div>
 <main class="wrap">
-{outage_banner_html(status_rows)}
+{outage_banner_html(status_rows, major_only=True)}
+{radar_html(RADAR)}
 {briefing_html(briefing)}
 <section class="perso" aria-label="Mon suivi">
 <div class="suivi" id="suivi">
@@ -3517,6 +3541,10 @@ def ai_input(entries: list[dict], eol: list[dict], status_rows: list[dict]) -> s
                      f"{(i['date'] or NOW).astimezone(PARIS).strftime('%d/%m %H:%M')} | {i['title']} | "
                      f"{', '.join(i['cves'][:4]) or '-'}{' | ' + sev_text(i) if sev_text(i) else ''}{' | ' + risk_text(i) if risk_text(i) else ''} | {i['summary'][:300]}"
                      f"{' | Action CISA : ' + i['action'] if i['action'] else ''} | {i['link']}")
+    if RADAR:
+        lines.append("\n## Événements majeurs relayés par la presse (à mentionner dans la synthèse, en précisant « selon la presse »)")
+        for v in RADAR:
+            lines.append(f"- [{RADAR_CATS.get(v['cat'], 'Événement')}] {v['title']} ({v['pubs']} médias). {v['summary']}")
     lines.append("\n## Pages d'état des services (24 h)")
     for r in status_rows:
         if r["ok"] is None:
@@ -4138,13 +4166,30 @@ ARCH_CSS = """
 """
 
 
+def outages_page(status_rows: list[dict]) -> str:
+    loc = NOW.astimezone(PARIS)
+    n_open = sum(1 for r in status_rows if any(not i["resolved"] for i in r["incidents"]))
+    n_major = sum(1 for r in status_rows if is_major(r))
+    head = ("Aucune panne en cours sur les services suivis." if not n_open else
+            f"{plural(n_open, 'panne en cours', 'pannes en cours')}"
+            + (f", dont {plural(n_major, 'panne majeure', 'pannes majeures')}" if n_major else "") + ".")
+    body = (f"<h1>Pannes</h1><p>Mis à jour le {e(date_fr(loc))} à {loc.strftime('%H:%M')}. <b>{e(head)}</b> "
+            f"Pages d'état officielles de {len(STATUS_FEEDS)} services, et grandes pannes relayées par la presse "
+            f"(au moins {OUTAGE_MIN} médias ; « majeure » à partir de {OUTAGE_MAJOR_PUBS}). Les pannes majeures "
+            "s'affichent aussi en haut du bulletin.</p>"
+            + (section("En cours", "Du plus relayé au moins relayé", outage_banner_html(status_rows), "en-cours") if n_open else "")
+            + section("Tous les services suivis", f"Incidents des dernières {STATUS_HOURS} h, en cours ou résolus",
+                      status_html(status_rows), "services"))
+    return simple_page("Pannes", body, "pannes.html",
+                       f"Pannes en cours et incidents des dernières 24 h sur les grands services suivis par {SITE_NAME}.",
+                       active="outages", extra_css=".doc{max-width:980px}.doc ul.services{padding:0}")
+
+
 def state_page(entries: list[dict], eol: list[dict], status_rows: list[dict]) -> str:
     loc = NOW.astimezone(PARIS)
     body = (f"<h1>État du parc</h1><p>Vue d'ensemble mise à jour le {e(date_fr(loc))} à {loc.strftime('%H:%M')} : "
-            "domaines concernés, fins de maintenance, disponibilité des grands services et état des sources.</p>"
-            + outage_banner_html(status_rows)
-            + section("Disponibilité des services", f"Pages d'état officielles et pannes relayées par la presse, "
-                      f"dernières {STATUS_HOURS} h", status_html(status_rows), "services")
+            "domaines concernés, agenda, fins de maintenance et état des sources. Les pannes des services sont dans "
+            "l'onglet <a href=\"pannes.html\">Pannes</a>.</p>"
             + section("Panorama par domaine", "Où en est chaque partie de l'infrastructure",
                       panorama_html(entries, eol, status_rows), "panorama")
             + section("Agenda des correctifs", "Patch Tuesday, correctifs trimestriels, échéances CISA et fins de "
@@ -4344,6 +4389,349 @@ def weekly_recap(entries: list[dict], events: list[dict]) -> None:
     print("[ok] Récap du lundi envoyé.")
 
 
+RADAR: list[dict] = []   # événements « À la une » du passage en cours
+
+
+# ═════════════════════ Radar : événements majeurs repérés automatiquement ═════════════════════
+# Objectif : ne plus dépendre d'une liste écrite à l'avance. À chaque passage, le site interroge Google Actualités
+# (Bing Actualités en secours) sur les grands types d'événements qui comptent pour un SysOps : faille zero-day,
+# attaque d'un fournisseur ou de la chaîne logicielle, mise à jour défectueuse, correctif d'urgence, fuite massive,
+# panne géante. Les articles qui parlent du même sujet sont regroupés ; un sujet est retenu quand plusieurs médias
+# différents le relaient. L'IA trie ensuite (quelques appels par jour) ce qui concerne vraiment l'exploitation
+# informatique et rédige un titre et un résumé en français. Sans IA, un tri par mots-clés prend le relais.
+RADAR_QUERIES = {
+    "fr": ['zero-day OR "0-day" faille exploitée', 'cyberattaque OR ransomware OR piratage éditeur OR hébergeur OR fournisseur',
+           '"mise à jour" défectueuse OR bug Windows OR Linux OR serveurs', 'correctif "en urgence" OR "hors cycle" faille critique',
+           'panne mondiale OR "panne géante" OR "panne massive"', 'fuite de données massive OR piratage "millions"'],
+    "en": ['zero-day actively exploited', '"supply chain attack" OR "compromised package" OR backdoor',
+           '"faulty update" OR "bad update" outage OR crash', '"emergency patch" OR "out-of-band" update critical',
+           'global outage OR "major outage"', 'ransomware attack provider OR vendor OR hosting'],
+}
+# Sites lus directement, en plus de Google Actualités : presse informatique et cybersécurité, française et
+# internationale, blogs d'éditeurs de sécurité, agences officielles. Un flux en panne est simplement ignoré.
+RADAR_FEEDS = {
+    # France
+    "LeMagIT": "https://www.lemagit.fr/rss/ContentSyndication.xml",
+    "ZDNet France": "https://www.zdnet.fr/feeds/rss/actualites/",
+    "01net": "https://www.01net.com/actualites/feed/",
+    "Numerama": "https://www.numerama.com/feed/",
+    "Next": "https://next.ink/feed/",
+    "Silicon.fr": "https://www.silicon.fr/feed",
+    "Le Monde Informatique": "https://www.lemondeinformatique.fr/flux-rss/thematique/toutes-les-actualites/rss.xml",
+    "Clubic": "https://www.clubic.com/feed/news.rss",
+    "L'Usine Digitale": "https://www.usine-digitale.fr/rss",
+    "UnderNews": "https://www.undernews.fr/feed",
+    "CERT-FR actualités": "https://www.cert.ssi.gouv.fr/actualite/feed/",
+    "Cybermalveillance.gouv.fr": "https://www.cybermalveillance.gouv.fr/feed/atom-flux-actualites",
+    # International
+    "The Register": "https://www.theregister.com/headlines.atom",
+    "Ars Technica": "https://feeds.arstechnica.com/arstechnica/index",
+    "SecurityWeek": "https://www.securityweek.com/feed/",
+    "Dark Reading": "https://www.darkreading.com/rss.xml",
+    "The Record": "https://therecord.media/feed",
+    "Help Net Security": "https://www.helpnetsecurity.com/feed/",
+    "CyberScoop": "https://cyberscoop.com/feed/",
+    "TechCrunch Security": "https://techcrunch.com/category/security/feed/",
+    "SANS Internet Storm Center": "https://isc.sans.edu/rssfeed_full.xml",
+    "Hacker News (les plus commentés)": "https://hnrss.org/frontpage?points=300",
+    # Éditeurs de sécurité et agences
+    "Microsoft MSRC (blog)": "https://msrc.microsoft.com/blog/feed",
+    "Tenable": "https://www.tenable.com/blog/feed",
+    "Rapid7": "https://www.rapid7.com/blog/rss/",
+    "Unit 42 (Palo Alto)": "https://unit42.paloaltonetworks.com/feed/",
+    "Google Threat Intelligence": "https://cloud.google.com/blog/topics/threat-intelligence/rss/",
+    "CISA (avis)": "https://www.cisa.gov/cybersecurity-advisories/all.xml",
+    "NCSC (Royaume-Uni)": "https://www.ncsc.gov.uk/api/1/services/v1/all-rss-feed.xml",
+}
+# Dans ces flux généralistes, on ne garde que les titres qui parlent d'un incident ou d'une faille
+RADAR_TOPIC_RE = re.compile(
+    r"zero-?day|0-?day|faille|vuln[ée]rab|\bcve-|exploit|cyberattaque|cyber-?attack|ransomware|rançongiciel|piratage|pirat[ée]|"
+    r"\bhack|breach|fuite de données|data leak|backdoor|porte dérobée|supply.chain|malware|logiciel malveillant|"
+    r"\bpannes?\b|outage|\bdown\b|hors service|incident|patch|correctif|mise à jour (?:défectueuse|d'urgence|de sécurité)|"
+    r"faulty update|bad update|out-of-band|emergency (?:patch|update|fix)|compromis|compromise", re.I)
+_PRESS_POOL: dict = {}
+
+
+def press_pool() -> dict:
+    """Lit une seule fois par passage, en parallèle, tous les flux de presse et les recherches d'actualités.
+    Renvoie {"arts": [...], "ok": flux lus, "total": flux interrogés, "failed": [noms]}."""
+    if _PRESS_POOL:
+        return _PRESS_POOL
+    from concurrent.futures import ThreadPoolExecutor
+    cutoff = NOW - timedelta(hours=24)
+    jobs = []   # (nom, [adresses à essayer dans l'ordre], langue, flux généraliste ?)
+    for lang, queries in RADAR_QUERIES.items():
+        hl = "hl=fr&gl=FR&ceid=FR:fr" if lang == "fr" else "hl=en-US&gl=US&ceid=US:en"
+        for q in queries:
+            jobs.append((f"Recherche « {q[:30]} »", [
+                f"https://news.google.com/rss/search?q={urllib.parse.quote(q + ' when:1d')}&{hl}",
+                f"https://www.bing.com/news/search?q={urllib.parse.quote(q)}&format=rss&qft=interval%3d%227%22"], lang, False))
+    for url in OUTAGE_NEWS:
+        jobs.append(("Recherche pannes", [url], "fr" if "hl=fr" in url else "en", False))
+    fr_names = {"LeMagIT", "ZDNet France", "01net", "Numerama", "Next", "Silicon.fr", "Le Monde Informatique", "Clubic",
+                "L'Usine Digitale", "UnderNews", "CERT-FR actualités", "Cybermalveillance.gouv.fr", "Zataz", "IT-Connect"}
+    for name, url in {**NEWS_FEEDS, **RADAR_FEEDS}.items():
+        jobs.append((name, [url], "fr" if name in fr_names else "en", True))
+
+    def run(job):
+        name, urls, lang, general = job
+        for url in urls:
+            try:
+                entries = parse_feed(fetch(url, timeout=12))
+            except Exception:
+                continue
+            out = []
+            for x in entries:
+                if not (x["date"] and x["date"] >= cutoff and x["title"]):
+                    continue
+                if general:
+                    if not RADAR_TOPIC_RE.search(x["title"]):
+                        continue
+                    title, pub = x["title"], name
+                else:
+                    title, pub = _radar_pub(x, url)
+                out.append({"title": clean(title, 170), "pub": pub, "date": x["date"], "link": safe_url(x["link"]),
+                            "summary": x["summary"][:400], "tok": _radar_tokens(title), "lang": lang, "feed": name})
+            return name, True, out
+        return name, False, []
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        results = list(ex.map(run, jobs))
+    arts, seen = [], set()
+    for _, _, out in results:
+        for a in out:
+            key = (a["pub"].lower(), a["title"].lower()[:60])
+            if key not in seen:
+                seen.add(key)
+                arts.append(a)
+    direct = [(n, ok) for (n, ok, _), j in zip(results, jobs) if j[3]]
+    _PRESS_POOL.update(arts=arts, ok=sum(1 for _, ok, _ in results if ok), total=len(jobs),
+                       failed=[n for n, ok in direct if not ok], direct_ok=sum(1 for _, ok in direct if ok),
+                       direct_total=len(direct), search_ok=sum(1 for (n, ok, _), j in zip(results, jobs) if ok and not j[3]))
+    return _PRESS_POOL
+
+
+RADAR_FILE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "radar.json")
+RADAR_MIN_PUBS = 4          # médias différents pour retenir un sujet (3 s'il cite une CVE ou une technologie suivie)
+RADAR_MAX_SHOWN = 4
+RADAR_AI_PER_DAY = 6        # appels de tri à l'IA par jour, au plus
+RADAR_KEEP_HOURS = 36       # un événement reste affiché 36 h après le dernier article
+RADAR_CATS = {"faille": "Faille", "attaque": "Attaque", "panne": "Panne", "mise_a_jour": "Mise à jour défectueuse",
+              "fuite": "Fuite de données", "autre": "Événement"}
+RADAR_STOP = set("""le la les un une des du de d l au aux et ou en dans sur pour par avec sans que qui quoi dont est sont a ont
+ce cette ces son sa ses leur leurs plus moins tres apres avant selon chez vers entre comme mais pas ne se s y il elle ils on nous
+vous the a an of to in on for and or with by from at as is are was were be been it its this that these those after before new
+how why what says said say could may will has have had not no into over more than about amid""".split())
+RADAR_SYSTEM = """Tu tries l'actualité pour L3NOX, un bulletin de veille destiné aux administrateurs systèmes et réseaux (SysOps).
+On te donne des sujets repérés dans la presse (plusieurs titres d'articles par sujet, avec le nombre de médias).
+Garde UNIQUEMENT les événements majeurs qui concernent l'exploitation informatique en entreprise :
+faille zero-day ou exploitée, attaque d'un éditeur/fournisseur/hébergeur ou de la chaîne logicielle, mise à jour défectueuse,
+correctif d'urgence, panne de grande ampleur d'un service utilisé en entreprise, fuite de données chez un fournisseur IT.
+Écarte : résultats financiers, lancements de produits, IA grand public, cryptomonnaies, jeux, faits divers,
+piratages de particuliers ou d'organisations sans rapport avec un fournisseur IT, rumeurs, publicités.
+Réponds UNIQUEMENT par un tableau JSON. Un objet par sujet retenu :
+{"id": numéro du sujet, "categorie": "faille|attaque|panne|mise_a_jour|fuite|autre", "titre": titre factuel en français (90 caractères max),
+"resume": 2 phrases factuelles en français, tirées des titres fournis uniquement, sans rien inventer,
+"produits": ["produits ou services concernés"], "importance": 1 à 3 (3 = à traiter aujourd'hui par la plupart des SysOps)}.
+Si aucun sujet ne mérite d'être retenu, réponds []."""
+
+
+def _radar_tokens(title: str) -> set:
+    import unicodedata
+    t = unicodedata.normalize("NFKD", title.lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return {w for w in re.findall(r"cve-\d{4}-\d+|[a-z0-9][a-z0-9.+#-]{2,}", t) if w not in RADAR_STOP and not w.isdigit()}
+
+
+def _radar_pub(x: dict, url: str) -> tuple[str, str]:
+    """(titre sans le nom du média, nom du média)"""
+    title = x["title"]
+    if "news.google" in url and " - " in title:
+        title, _, pub = title.rpartition(" - ")
+        return title.strip(), pub.strip()
+    link = x["link"] or ""
+    m = re.search(r"[?&]url=([^&]+)", link)
+    if m:
+        link = urllib.parse.unquote(m.group(1))
+    host = urllib.parse.urlparse(link).netloc.lower().removeprefix("www.")
+    return title, host or "?"
+
+
+def radar_articles() -> tuple[list[dict], int]:
+    pool = press_pool()
+    return pool["arts"], pool["ok"]
+
+
+def radar_clusters(arts: list[dict]) -> list[dict]:
+    clusters = []
+    for a in sorted(arts, key=lambda a: a["date"]):
+        best, score = None, 0.0
+        for c in clusters:
+            inter = a["tok"] & c["tok"]
+            strong = [w for w in inter if len(w) >= 5 or w.startswith("cve-")]
+            s = len(inter) / max(1, min(len(a["tok"]), len(c["core"])))
+            if len(inter) >= 2 and strong and s >= 0.5 and s > score:
+                best, score = c, s
+        if best is None:
+            clusters.append({"arts": [a], "tok": set(a["tok"]), "core": set(a["tok"])})
+        else:
+            best["arts"].append(a)
+            best["tok"] |= a["tok"]
+            freq = {}
+            for x in best["arts"]:
+                for w in x["tok"]:
+                    freq[w] = freq.get(w, 0) + 1
+            best["core"] = {w for w, n in freq.items() if n >= max(2, len(best["arts"]) // 3)} or best["core"]
+    out = []
+    for c in clusters:
+        pubs = {a["pub"].lower() for a in c["arts"]}
+        text = " ".join(a["title"] for a in c["arts"])
+        techs = [t for t, rx in PARC_RE.items() if rx.search(text)]
+        cves = sorted(set(m.upper() for m in CVE_RE.findall(text)))
+        if len(pubs) < (RADAR_MIN_PUBS - 1 if (techs or cves) else RADAR_MIN_PUBS):
+            continue
+        if OUTAGE_RE.search(text) and any(re.search(rx, text, re.I) for rx in OUTAGE_SERVICES.values()):
+            continue   # déjà traité par le bandeau « Panne en cours »
+        freq = {}
+        for a in c["arts"]:
+            for w in a["tok"]:
+                freq[w] = freq.get(w, 0) + 1
+        key = "+".join(sorted(sorted(freq, key=lambda w: (-freq[w], w))[:4]))
+        c["arts"].sort(key=lambda a: a["date"], reverse=True)
+        out.append({"key": key, "pubs": len(pubs), "arts": c["arts"], "techs": techs, "cves": cves,
+                    "first": min(a["date"] for a in c["arts"]), "last": c["arts"][0]["date"]})
+    return sorted(out, key=lambda c: -c["pubs"])
+
+
+def _radar_guess_cat(text: str) -> str:
+    for cat, rx in (("panne", r"\bpanne|outage|\bdown\b"), ("mise_a_jour", r"mise à jour défectueuse|faulty update|bad update"),
+                    ("faille", r"zero-day|0-day|faille|vulnerab|cve-|exploit"), ("fuite", r"fuite de données|data breach|leak"),
+                    ("attaque", r"cyberattaque|ransomware|rançongiciel|piratage|hack|supply chain|backdoor|breach")):
+        if re.search(rx, text, re.I):
+            return cat
+    return "autre"
+
+
+def collect_radar() -> list[dict]:
+    """Événements majeurs à afficher « À la une » (liste de dictionnaires prêts pour l'affichage)."""
+    state = _load(RADAR_FILE)
+    events, judged = state.get("events", {}), state.get("judged", {})
+    calls, day, now_s = state.get("calls", {}), NOW.strftime("%Y-%m-%d"), NOW.timestamp()
+    arts, ok = radar_articles()
+    clusters = radar_clusters(arts)
+    # 1) tri par l'IA des sujets pas encore jugés (ou qui ont pris beaucoup d'ampleur depuis)
+    todo = [c for c in clusters if c["key"] not in judged or c["pubs"] >= 2 * judged[c["key"]].get("pubs", 1) + 2][:20]
+    used_ai = False
+    if todo and ((AI_URL and AI_SECRET) or AI_KEY) and calls.get(day, 0) < RADAR_AI_PER_DAY \
+            and credits_status()["left_month"] > 2:
+        lines = []
+        for n, c in enumerate(todo, 1):
+            lines.append(f"Sujet {n} ({c['pubs']} médias) :")
+            lines += [f"  - {a['title']} [{a['pub']}]" for a in c["arts"][:6]]
+        calls[day] = calls.get(day, 0) + 1
+        try:
+            raw = ai_text(RADAR_SYSTEM, "\n".join(lines), 1500)
+            m = re.search(r"\[.*\]", raw, re.S)
+            verdicts = json.loads(m.group(0)) if m else []
+            keep = {int(v.get("id", 0)): v for v in verdicts if isinstance(v, dict)}
+            for n, c in enumerate(todo, 1):
+                v = keep.get(n)
+                judged[c["key"]] = {"t": now_s, "pubs": c["pubs"], "keep": bool(v) and int(v.get("importance", 1) or 1) >= 2,
+                                    "v": {"categorie": str(v.get("categorie", "autre"))[:20], "titre": clean(str(v.get("titre", "")), 110),
+                                          "resume": clean(str(v.get("resume", "")), 420),
+                                          "produits": [clean(str(p), 40) for p in (v.get("produits") or [])][:5],
+                                          "importance": max(1, min(3, int(v.get("importance", 1) or 1)))} if v else None}
+            used_ai = True
+        except Exception as ex:
+            print(f"[!] Radar : tri par l'IA impossible ({type(ex).__name__}: {str(ex)[:120]}), tri par mots-clés.")
+    # 2) mise à jour de la liste des événements
+    for c in clusters:
+        j = judged.get(c["key"])
+        if j is not None:
+            if not j.get("keep"):
+                continue
+            v = j["v"]
+        else:   # pas (encore) jugé par l'IA : règle simple, seulement si une technologie suivie ou une CVE est citée
+            if not (c["techs"] or c["cves"]):
+                continue
+            text = " ".join(a["title"] for a in c["arts"])
+            v = {"categorie": _radar_guess_cat(text), "titre": "", "resume": "", "importance": 2,
+                 "produits": [PARC_LABEL[t] for t in c["techs"][:3]]}
+        fr = next((a for a in c["arts"] if a["lang"] == "fr"), c["arts"][0])
+        links, seen_p = [], set()
+        for a in c["arts"]:
+            if a["link"] and a["pub"].lower() not in seen_p:
+                seen_p.add(a["pub"].lower())
+                links.append({"pub": a["pub"], "url": a["link"], "title": a["title"]})
+        old = events.get(c["key"], {})
+        events[c["key"]] = {"key": c["key"], "cat": v["categorie"] if v["categorie"] in RADAR_CATS else "autre",
+                            "title": v["titre"] or fr["title"], "summary": v["resume"], "products": v.get("produits", []),
+                            "importance": v["importance"], "pubs": max(c["pubs"], old.get("pubs", 0)),
+                            "cves": c["cves"][:4], "links": links[:4],
+                            "first": min(c["first"].isoformat(), old.get("first", "9")), "last": c["last"].isoformat(),
+                            "notified": old.get("notified", False), "ai": bool(v["titre"])}
+    limit = (NOW - timedelta(hours=RADAR_KEEP_HOURS)).isoformat()
+    events = {k: v for k, v in events.items() if v.get("last", "") >= limit}
+    judged = {k: v for k, v in judged.items() if now_s - v.get("t", 0) < 4 * 86400}
+    calls = {k: v for k, v in calls.items() if k >= (NOW - timedelta(days=3)).strftime("%Y-%m-%d")}
+    _save(RADAR_FILE, {"events": events, "judged": judged, "calls": calls})
+    shown = sorted(events.values(), key=lambda v: (-v["importance"], -v["pubs"], v["last"]))[:RADAR_MAX_SHOWN]
+    STATUS.append(("Radar (événements majeurs)", ok > 0,
+                   f"{len(arts)} article(s) lus, {len(clusters)} sujet(s) relayé(s) par plusieurs médias, "
+                   f"{len(shown)} événement(s) à la une" + (" ; tri par l'IA" if used_ai else "")
+                   + ("" if ok else " ; aucune source de presse joignable")
+                   + f" ; {_PRESS_POOL.get('direct_ok', 0)} site(s) lu(s) directement sur {_PRESS_POOL.get('direct_total', 0)}, "
+                     f"{_PRESS_POOL.get('search_ok', 0)} recherche(s) d'actualités"
+                   + (f" ; illisibles : {', '.join(_PRESS_POOL.get('failed', [])[:8])}" if _PRESS_POOL.get("failed") else "")))
+    return shown
+
+
+def radar_html(events: list[dict]) -> str:
+    if not events:
+        return ""
+    cards = []
+    for v in events:
+        first = datetime.fromisoformat(v["first"])
+        links = " · ".join(f'<a href="{e(l["url"])}" target="_blank" rel="noopener nofollow" title="{e(l["title"])}">{e(l["pub"])}</a>'
+                           for l in v["links"])
+        prods = "".join(f'<span class="r-prod">{e(p)}</span>' for p in v.get("products", []) + v.get("cves", []))
+        cards.append(
+            f'<article class="radar-card imp{v["importance"]} cat-{e(v["cat"])}"><p class="r-top"><span class="r-cat">'
+            f'{e(RADAR_CATS.get(v["cat"], "Événement"))}</span><span class="r-meta">relayé par {v["pubs"]} médias · depuis '
+            f'{e(when(first))}</span></p><h3>{e(v["title"])}</h3>'
+            + (f'<p class="r-sum">{e(v["summary"])}</p>' if v["summary"] else "")
+            + (f'<p class="r-prods">{prods}</p>' if prods else "")
+            + f'<p class="r-src">Sources : {links}</p></article>')
+    return ('<section class="radar" id="une" aria-label="À la une"><div class="sh"><h2>À la une</h2><p>Événements majeurs repérés '
+            f'dans la presse</p></div><div class="radar-grid">{"".join(cards)}</div>'
+            '<p class="r-note">Sujets relayés par plusieurs médias, triés automatiquement : à confirmer auprès des sources officielles.</p></section>')
+
+
+def notify_radar(events: list[dict]) -> None:
+    """Notification pour un nouvel événement majeur très relayé (une seule fois par événement)."""
+    if not NTFY_TOPIC or not events:
+        return
+    state = _load(RADAR_FILE)
+    stored, changed = state.get("events", {}), False
+    first_time = not state.get("notif_init")
+    for v in events:
+        s = stored.get(v["key"])
+        if not s or s.get("notified"):
+            continue
+        if v["importance"] >= 3 or v["pubs"] >= 8:
+            s["notified"] = changed = True
+            if first_time:
+                continue
+            try:
+                ntfy(f"📰 À la une · {v['title']}", (v["summary"] or f"Relayé par {v['pubs']} médias."),
+                     f"https://{SITE_DOMAIN}/" if SITE_DOMAIN else (v["links"][0]["url"] if v["links"] else ""), 4, ["newspaper"])
+            except Exception as ex:
+                print(f"[!!] Notification radar : {ex}")
+                s["notified"] = False
+    if changed or first_time:
+        state["notif_init"] = True
+        _save(RADAR_FILE, state)
+
+
 def main(out_dir: str = "_site") -> None:
     kev = safe("CISA KEV", collect_kev)
     cert = collect_cert()
@@ -4361,6 +4749,11 @@ def main(out_dir: str = "_site") -> None:
         collect_outages(status_rows)
     except Exception as ex:
         STATUS.append(("Pannes (presse)", False, type(ex).__name__))
+    try:   # radar : événements majeurs relayés par plusieurs médias
+        RADAR[:] = collect_radar()
+    except Exception as ex:
+        STATUS.append(("Radar (événements majeurs)", False, f"{type(ex).__name__}: {str(ex)[:120]}"))
+        print(f"[!] Radar : {ex}")
     eol = collect_eol()
     news = collect_news() if INCLUDE_PRESS else []
     try:   # avant le regroupement, pour que toutes les vues (accueil, articles, archives) aient le score
@@ -4387,10 +4780,12 @@ def main(out_dir: str = "_site") -> None:
         f.write(render_rss(urgent))
     with open(os.path.join(out_dir, "etat.html"), "w", encoding="utf-8") as f:
         f.write(state_page(merged, eol, status_rows))
+    with open(os.path.join(out_dir, "pannes.html"), "w", encoding="utf-8") as f:
+        f.write(outages_page(status_rows))
     CVE_ANCHOR.clear()  # les liens vers les articles ne valent que pour la page d'accueil
     CVE_DETAIL.clear()
     days = update_archives(merged, posts, briefing)
-    write_extras(out_dir, ["etat.html"] + write_archives(out_dir, days))
+    write_extras(out_dir, ["pannes.html", "etat.html"] + write_archives(out_dir, days))
     if SITE_DOMAIN:
         with open(os.path.join(out_dir, "CNAME"), "w") as f:
             f.write(SITE_DOMAIN)
@@ -4400,6 +4795,7 @@ def main(out_dir: str = "_site") -> None:
     notify_p1(urgent)
     weekly_recap(merged, AGENDA)
     notify_outages(status_rows)
+    notify_radar(RADAR)
     print(f"Bulletin généré : {len(urgent)} alerte(s) prioritaire(s), {len(news)} actu(s).")
 
 
