@@ -1082,6 +1082,10 @@ def collect_status() -> list[dict]:
     return rows
 
 
+# Numéros d'incident Microsoft 365 cités par la presse (EX… Exchange, MO… Microsoft 365, TM… Teams, SP… SharePoint…)
+INCIDENT_ID_RE = re.compile(r"\b(?:EX|MO|TM|SP|OD|DZ|CP|MV|IT|PB|FL|LY)\d{6,8}\b")
+
+
 def collect_outages(rows: list[dict]) -> None:
     """Ajoute aux pages d'état les grandes pannes relayées par plusieurs médias (Google Actualités + presse spécialisée)."""
     cutoff = NOW - timedelta(hours=STATUS_HOURS)
@@ -1091,7 +1095,8 @@ def collect_outages(rows: list[dict]) -> None:
             for x in parse_feed(fetch(url, timeout=20)):
                 if x["date"] and x["date"] >= cutoff and x["title"] and OUTAGE_RE.search(x["title"]):
                     title, _, pub = x["title"].rpartition(" - ") if " - " in x["title"] and "news.google" in url else (x["title"], "", url.split("/")[2])
-                    arts.append({"title": clean(title, 160), "pub": pub.strip().lower(), "date": x["date"], "link": safe_url(x["link"])})
+                    arts.append({"title": clean(title, 160), "pub": pub.strip().lower(), "date": x["date"],
+                                 "link": safe_url(x["link"]), "ids": INCIDENT_ID_RE.findall(f"{x['title']} {x['summary']}")})
             ok += 1
         except Exception:
             continue
@@ -1106,7 +1111,8 @@ def collect_outages(rows: list[dict]) -> None:
         # résolue seulement si les articles les plus récents le disent (au moins 2 des 3 derniers)
         resolved = sum(1 for a in hits[:3] if OUTAGE_DONE_RE.search(a["title"])) >= 2
         inc = {"title": f"{latest['title']} (signalé par {len(pubs)} médias)", "link": latest["link"] or STATUS_PAGES.get(svc, ""),
-               "date": min(a["date"] for a in hits), "resolved": resolved, "press": len(pubs)}
+               "date": min(a["date"] for a in hits), "resolved": resolved, "press": len(pubs),
+               "ids": list(dict.fromkeys(i.upper() for a in hits for i in a["ids"]))[:4]}
         row = by_name.get(svc)
         if row is None:
             row = {"name": svc, "ok": True, "incidents": []}
@@ -1147,6 +1153,75 @@ def notify_outages(rows: list[dict]) -> None:
     seen.setdefault("_init", day)
     limit = (NOW - timedelta(days=10)).strftime("%Y-%m-%d")
     _save(OUTAGE_STATE, {k: v for k, v in seen.items() if v >= limit or k == "_init"})
+
+
+OUTAGE_STEPS = [
+    "Ne rien modifier chez vous : le problème vient du fournisseur. Éviter les redémarrages, réinstallations et "
+    "changements de configuration, qui compliquent le retour à la normale.",
+    "Confirmer que vous êtes touchés : tester depuis deux réseaux différents et consulter la page d'état officielle.",
+    "Prévenir rapidement les utilisateurs (panne chez le fournisseur, pas d'action de leur part) et le support, "
+    "pour éviter une vague de tickets.",
+    "Proposer une solution de secours : version web ou mobile, autre canal (téléphone, messagerie de secours), "
+    "report des opérations non urgentes.",
+    "Surveiller la fin de l'incident, puis vérifier les files d'attente (courriels en retard, synchronisations, "
+    "tâches planifiées) et garder une trace pour le bilan.",
+]
+OUTAGE_TIPS = {
+    "Microsoft 365": "Suivi officiel : centre d'administration Microsoft 365 → Intégrité → Intégrité du service "
+                     "(numéro d'incident), ou le compte @MSFT365Status.",
+    "Azure": "Suivi officiel : portail Azure → Service Health (incidents propres à vos abonnements et régions).",
+    "AWS": "Suivi officiel : AWS Health Dashboard, par région et par service.",
+    "Cloudflare": "Suivi officiel : cloudflarestatus.com, par service et par région.",
+    "OVHcloud": "Suivi officiel : status-ovhcloud.com, par gamme et par centre de données.",
+}
+
+
+def outage_banner_html(rows: list[dict]) -> str:
+    """Bandeau bien visible, en haut du bulletin et de l'état du parc, quand une panne est en cours."""
+    open_rows = [r for r in rows if any(not i["resolved"] for i in r["incidents"])]
+    if not open_rows:
+        return ""
+    # les pannes les plus relayées d'abord
+    open_rows.sort(key=lambda r: -max((i.get("press", 0) for i in r["incidents"] if not i["resolved"]), default=0))
+    cards = []
+    for r in open_rows:
+        inc = next(i for i in r["incidents"] if not i["resolved"])
+        n = inc.get("press", 0)
+        major = n >= 5
+        since = min(i["date"] for i in r["incidents"] if not i["resolved"])
+        badge = "Panne majeure en cours" if major else "Panne en cours"
+        origin = f"relayée par {n} médias" if n else "page d'état officielle"
+        title = re.sub(r"\s*\(signalé par \d+ médias\)$", "", inc["title"])
+        page = STATUS_PAGES.get(r["name"], "")
+        lab = "Lire l'article" if n else "Voir l'incident"
+        links = f'<a href="{e(inc["link"])}" target="_blank" rel="noopener">{lab}</a>' if inc["link"] else ""
+        if page and page != inc["link"]:
+            links += f'<a href="{e(page)}" target="_blank" rel="noopener">Page d\'état officielle</a>'
+        tip = OUTAGE_TIPS.get(r["name"], "")
+        steps = "".join(f"<li>{e(x)}</li>" for x in OUTAGE_STEPS)
+        ids = [i for x in r["incidents"] if not x["resolved"] for i in x.get("ids", [])]
+        official = []
+        if page:
+            official.append(f'La <a href="{e(page)}" target="_blank" rel="noopener">page d\'état officielle de {e(r["name"])}</a> '
+                            'est la seule source qui fait foi : état en temps réel, cause et consignes éventuelles.')
+        if ids:
+            official.append("Numéros d'incident cités par la presse, à rechercher sur la page officielle : <b>"
+                            + ", ".join(e(i) for i in dict.fromkeys(ids)) + "</b>.")
+        if tip:
+            official.append(e(tip))
+        if n:
+            official.append("Cette panne est signalée ici d'après la presse : le site ne lit pas les consignes du "
+                            "fournisseur. S'il publie un contournement, il sera sur sa page officielle.")
+        cards.append(
+            f'<article class="outage{" major" if major else ""}"><p class="o-badge">{badge}</p>'
+            f'<h2>{e(r["name"])}</h2><p class="o-title">{e(title)}</p>'
+            f'<p class="o-meta">Depuis {e(when(since))} · {origin}</p><p class="o-links">{links}</p>'
+            '<details><summary>Que faire pendant la panne</summary>'
+            + ('<h3 class="o-h">Ce que dit le fournisseur</h3><ul class="o-off">'
+               + "".join(f"<li>{x}</li>" for x in official) + "</ul>" if official else "")
+            + f'<h3 class="o-h">Bonnes pratiques <span>(conseils généraux de L3NOX, pas des consignes du fournisseur)</span></h3>'
+            f'<ol>{steps}</ol></details></article>')
+    return f'<section class="outages" aria-label="Pannes en cours">{"".join(cards)}</section>'
 
 
 def collect_eol() -> list[dict]:
@@ -1385,6 +1460,29 @@ pre{font-size:13px}
 """.replace("%DARK%", DARK_TOKENS)
 
 CSS_EXTRA = """
+/* Pannes en cours : bandeau bien visible */
+.outages{display:grid;gap:12px;margin:22px 0 6px}
+.outage{border:2px solid var(--p2);border-left-width:10px;border-radius:12px;padding:14px 18px 10px;
+background:color-mix(in srgb,var(--p2) 9%,var(--sheet))}
+.outage.major{border-color:var(--p1);background:color-mix(in srgb,var(--p1) 10%,var(--sheet))}
+.o-badge{display:inline-block;margin:0 0 6px;font:800 13px/1.6 var(--body);letter-spacing:.06em;text-transform:uppercase;
+color:var(--ontag,#fff);background:var(--p2);border-radius:5px;padding:1px 9px}
+.outage.major .o-badge{background:var(--p1)}
+.outage.major .o-badge::before{content:"● ";animation:blink 1.4s infinite}
+@keyframes blink{50%{opacity:.25}}
+@media (prefers-reduced-motion:reduce){.outage.major .o-badge::before{animation:none}}
+.outage h2{margin:0;font:800 clamp(24px,4.5vw,34px)/1.15 var(--display)}
+.o-title{margin:6px 0 2px;font-size:17px;font-weight:600}
+.o-meta{margin:0;color:var(--muted);font-size:14.5px}
+.o-links{display:flex;flex-wrap:wrap;gap:6px 18px;margin:8px 0 4px;font-size:15px;font-weight:600}
+.outage details{border-top:1px solid color-mix(in srgb,var(--ink) 14%,transparent);margin-top:8px;padding-top:2px}
+.outage summary{cursor:pointer;font-weight:700;padding:8px 0}
+.outage ol{margin:2px 0 8px;padding-left:22px;font-size:15.5px}.outage li{margin:4px 0}
+.o-h{margin:10px 0 4px;font:700 15.5px/1.35 var(--body)}.o-h span{font-weight:400;color:var(--muted);font-size:14px}
+.outage ul.o-off{margin:2px 0 8px;padding:8px 12px 8px 30px;font-size:15px;border-radius:8px;
+background:color-mix(in srgb,var(--ink) 6%,transparent)}.doc .outage ul.o-off{padding-left:30px}
+.doc .outages{margin-top:14px}.doc .outage ol{padding-left:22px}
+
 .fb-tab{border-collapse:collapse;margin:8px 0 12px;font-size:15px;width:100%}
 .fb-tab th{text-align:left;font-weight:600;color:var(--muted);padding:5px 12px 5px 0;vertical-align:top;white-space:nowrap;width:1%}
 .fb-tab td{padding:5px 0;border-top:1px solid var(--rule)}.fb-tab tr:first-child td{border-top:0}
@@ -3214,6 +3312,7 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
 <div><h1>{e(headline)}</h1><p class="lede">{e(lede)}</p><ul class="facts">{"".join(facts)}</ul></div></div>
 </div></div>
 <main class="wrap">
+{outage_banner_html(status_rows)}
 {briefing_html(briefing)}
 <section class="perso" aria-label="Mon suivi">
 <div class="suivi" id="suivi">
@@ -4043,14 +4142,15 @@ def state_page(entries: list[dict], eol: list[dict], status_rows: list[dict]) ->
     loc = NOW.astimezone(PARIS)
     body = (f"<h1>État du parc</h1><p>Vue d'ensemble mise à jour le {e(date_fr(loc))} à {loc.strftime('%H:%M')} : "
             "domaines concernés, fins de maintenance, disponibilité des grands services et état des sources.</p>"
+            + outage_banner_html(status_rows)
+            + section("Disponibilité des services", f"Pages d'état officielles et pannes relayées par la presse, "
+                      f"dernières {STATUS_HOURS} h", status_html(status_rows), "services")
             + section("Panorama par domaine", "Où en est chaque partie de l'infrastructure",
                       panorama_html(entries, eol, status_rows), "panorama")
             + section("Agenda des correctifs", "Patch Tuesday, correctifs trimestriels, échéances CISA et fins de "
                       "maintenance des 60 prochains jours", agenda_html(AGENDA, days=60, full=True), "agenda")
             + section("Fins de maintenance", f"Versions arrivées en fin de vie ces {EOL_PAST_DAYS} derniers jours "
                       f"ou dans les {EOL_NEXT_DAYS} prochains", eol_html(eol), "eol")
-            + section("Disponibilité des services", f"Pages d'état officielles, dernières {STATUS_HOURS} h",
-                      status_html(status_rows), "services")
             + section("Sources", "Cliquez sur une source pour ouvrir son site", sources_html(), "sources"))
     return simple_page("État du parc", body, "etat.html",
                        f"Panorama, fins de maintenance et disponibilité des services suivis par {SITE_NAME}.",
