@@ -113,11 +113,51 @@ STATUS_FEEDS = {
     "Google Cloud": ["https://status.cloud.google.com/en/feed.atom"],
     "AWS": ["https://status.aws.amazon.com/rss/all.rss"],
     "Azure": ["https://azure.status.microsoft/en-us/status/feed/"],
+    "OVHcloud": ["https://web-cloud.status-ovhcloud.com/history.atom", "https://public-cloud.status-ovhcloud.com/history.atom"],
+    "Atlassian": ["https://status.atlassian.com/history.atom"],
+    "Slack": ["https://slack-status.com/feed/atom"],
+    "Zoom": ["https://www.zoomstatus.com/history.atom"],
+    "Docker Hub": ["https://www.dockerstatus.com/history.atom"],
+    "Netlify": ["https://www.netlifystatus.com/history.atom"],
 }
 STATUS_PAGES = {
     "GitHub": "https://www.githubstatus.com/", "GitLab.com": "https://status.gitlab.com/",
     "Cloudflare": "https://www.cloudflarestatus.com/", "Google Cloud": "https://status.cloud.google.com/",
     "AWS": "https://health.aws.amazon.com/health/status", "Azure": "https://azure.status.microsoft/fr-fr/status",
+    "OVHcloud": "https://www.status-ovhcloud.com/", "Atlassian": "https://status.atlassian.com/",
+    "Slack": "https://slack-status.com/", "Zoom": "https://www.zoomstatus.com/",
+    "Docker Hub": "https://www.dockerstatus.com/", "Netlify": "https://www.netlifystatus.com/",
+    "Microsoft 365": "https://status.cloud.microsoft/", "Google Workspace": "https://www.google.com/appsstatus/dashboard/",
+    "ChatGPT / OpenAI": "https://status.openai.com/", "Claude": "https://status.claude.com/",
+    "Okta": "https://status.okta.com/", "Salesforce": "https://status.salesforce.com/",
+    "CrowdStrike": "https://status.crowdstrike.com/", "Orange / opérateurs": "https://www.arcep.fr/",
+}
+
+# ── Pannes signalées par la presse ──
+# Certains services n'ont pas de page d'état lisible par un programme (Microsoft 365 en premier). Pour ne pas rater
+# une grande panne, le site interroge Google Actualités : une panne est retenue quand au moins OUTAGE_MIN médias
+# différents en parlent dans les dernières 24 h. Ce n'est pas de l'actualité générale : seulement les pannes.
+OUTAGE_NEWS = [
+    "https://news.google.com/rss/search?q=" + urllib.parse.quote(
+        'panne (Microsoft OR Outlook OR Teams OR Azure OR AWS OR Cloudflare OR OVH OR Google OR Gmail OR GitHub OR Slack '
+        'OR ChatGPT OR Okta OR Salesforce OR CrowdStrike) when:1d') + "&hl=fr&gl=FR&ceid=FR:fr",
+    "https://news.google.com/rss/search?q=" + urllib.parse.quote(
+        'outage (Microsoft 365 OR Outlook OR Teams OR Azure OR AWS OR Cloudflare OR "Google Cloud" OR Gmail OR GitHub OR Slack '
+        'OR ChatGPT OR Okta OR Salesforce OR CrowdStrike) when:1d') + "&hl=en-US&gl=US&ceid=US:en",
+]
+OUTAGE_MIN = 3
+OUTAGE_RE = re.compile(r"\bpannes?\b|outage|\bdown\b|hors service|inaccessible|indisponible|paralys|perturb|"
+                       r"dysfonctionnement|incident", re.I)
+OUTAGE_DONE_RE = re.compile(r"résolu|rétabli|retour à la normale|de retour|restored|resolved|back online|fixed|"
+                            r"est terminée|fin de la panne", re.I)
+OUTAGE_SERVICES = {
+    "Microsoft 365": r"microsoft 365|office 365|\bm365\b|outlook|\bteams\b|sharepoint|onedrive|exchange online|"
+                     r"panne (?:mondiale )?(?:de |chez )?microsoft|microsoft outage",
+    "Azure": r"\bazure\b|entra id", "AWS": r"\baws\b|amazon web services",
+    "Google Cloud": r"google cloud|\bgcp\b", "Google Workspace": r"gmail|google workspace|google drive|google meet",
+    "Cloudflare": r"cloudflare", "OVHcloud": r"\bovh", "GitHub": r"github", "GitLab.com": r"gitlab", "Slack": r"\bslack\b",
+    "Zoom": r"\bzoom\b", "Atlassian": r"atlassian|\bjira\b|confluence", "ChatGPT / OpenAI": r"chatgpt|openai",
+    "Claude": r"\bclaude\b|anthropic", "Okta": r"\bokta\b", "Salesforce": r"salesforce", "CrowdStrike": r"crowdstrike",
 }
 STATUS_HOURS = 24
 
@@ -227,6 +267,7 @@ SOURCE_SITES = {
     "Google Chrome": "https://chromereleases.googleblog.com/",
     **NVD_SITES_EARLY,
     "NVD (NIST)": "https://nvd.nist.gov/vuln/search",
+    "Pannes (presse)": "https://news.google.com/search?q=panne%20Microsoft%20OR%20AWS%20OR%20Cloudflare",
     "IA (articles)": "https://app.netlify.com/",
     "IA (synthèse)": "https://app.netlify.com/",
     "GitHub Advisory (infra)": "https://github.com/advisories?query=severity%3Ahigh",
@@ -253,6 +294,7 @@ SOURCE_DESC = {
     "Atlassian": "Failles Atlassian (Confluence, Jira…) de score 7 ou plus, via la NVD",
     "SAP": "Failles SAP de score 7 ou plus, via la NVD",
     "Microsoft Exchange": "Failles Microsoft Exchange de score 7 ou plus, via la NVD",
+    "Pannes (presse)": "Grandes pannes de services (Microsoft 365, Google, AWS, OVH…) relayées par au moins 3 médias en 24 h",
     "IA (articles)": "Rédaction des articles détaillés par l'IA (crédits gratuits Netlify) : bilan du jour",
     "IA (synthèse)": "Rédaction du briefing du jour par l'IA",
     "NVD (NIST)": "Base américaine des vulnérabilités, interrogée toutes les 6 h pour les éditeurs ci-dessus",
@@ -1038,6 +1080,73 @@ def collect_status() -> list[dict]:
         STATUS.append((f"État {name}", True, f"{len(incidents)} incident(s) 24 h"))
         rows.append({"name": name, "ok": True, "incidents": incidents})
     return rows
+
+
+def collect_outages(rows: list[dict]) -> None:
+    """Ajoute aux pages d'état les grandes pannes relayées par plusieurs médias (Google Actualités + presse spécialisée)."""
+    cutoff = NOW - timedelta(hours=STATUS_HOURS)
+    arts, ok = [], 0
+    for url in OUTAGE_NEWS + list(NEWS_FEEDS.values()):
+        try:
+            for x in parse_feed(fetch(url, timeout=20)):
+                if x["date"] and x["date"] >= cutoff and x["title"] and OUTAGE_RE.search(x["title"]):
+                    title, _, pub = x["title"].rpartition(" - ") if " - " in x["title"] and "news.google" in url else (x["title"], "", url.split("/")[2])
+                    arts.append({"title": clean(title, 160), "pub": pub.strip().lower(), "date": x["date"], "link": safe_url(x["link"])})
+            ok += 1
+        except Exception:
+            continue
+    by_name = {r["name"]: r for r in rows}
+    found = []
+    for svc, rx in OUTAGE_SERVICES.items():
+        hits = sorted((a for a in arts if re.search(rx, a["title"], re.I)), key=lambda a: a["date"], reverse=True)
+        pubs = {a["pub"] for a in hits}
+        if len(pubs) < OUTAGE_MIN:
+            continue
+        latest = hits[0]
+        # résolue seulement si les articles les plus récents le disent (au moins 2 des 3 derniers)
+        resolved = sum(1 for a in hits[:3] if OUTAGE_DONE_RE.search(a["title"])) >= 2
+        inc = {"title": f"{latest['title']} (signalé par {len(pubs)} médias)", "link": latest["link"] or STATUS_PAGES.get(svc, ""),
+               "date": min(a["date"] for a in hits), "resolved": resolved, "press": len(pubs)}
+        row = by_name.get(svc)
+        if row is None:
+            row = {"name": svc, "ok": True, "incidents": []}
+            rows.append(row)
+            by_name[svc] = row
+        if row["ok"] is None:
+            row["ok"] = True
+        if not any(not i["resolved"] for i in row["incidents"]) or not resolved:
+            row["incidents"].insert(0, inc)
+        found.append(f"{svc} ({len(pubs)} médias{', résolue' if resolved else ''})")
+    STATUS.append(("Pannes (presse)", ok > 0, ("panne(s) détectée(s) : " + ", ".join(found)) if found
+                   else f"aucune grande panne relayée ({len(arts)} article(s) examiné(s))"))
+
+
+OUTAGE_STATE = os.path.join(os.environ.get("L3NOX_STATE", "state"), "outages.json")
+
+
+def notify_outages(rows: list[dict]) -> None:
+    """Notification quand une panne commence sur un service suivi (une fois par service et par jour)."""
+    if not NTFY_TOPIC:
+        return
+    seen, day = _load(OUTAGE_STATE), NOW.astimezone(PARIS).strftime("%Y-%m-%d")
+    first = not seen
+    for r in rows:
+        opened = [i for i in r["incidents"] if not i["resolved"]]
+        key = f"{r['name']}|{day}"
+        if not opened or key in seen:
+            continue
+        seen[key] = day
+        if first:
+            continue   # premier passage : on mémorise sans notifier
+        try:
+            ntfy(f"🟠 Panne en cours · {r['name']}", opened[0]["title"],
+                 f"https://{SITE_DOMAIN}/etat.html#services" if SITE_DOMAIN else opened[0]["link"], 4, ["warning"])
+        except Exception as ex:
+            print(f"[!!] Notification de panne : {ex}")
+            del seen[key]
+    seen.setdefault("_init", day)
+    limit = (NOW - timedelta(days=10)).strftime("%Y-%m-%d")
+    _save(OUTAGE_STATE, {k: v for k, v in seen.items() if v >= limit or k == "_init"})
 
 
 def collect_eol() -> list[dict]:
@@ -3056,7 +3165,7 @@ def render(kev, cert, redhat, vendors, ghsa, status_rows, news, eol=None, briefi
         level, band = "RAS", "ras"
         headline = "Rien de critique à traiter aujourd'hui."
         lede = "Bon moment pour avancer sur les mises à jour courantes."
-    facts = [f'<li class="down">Panne en cours : {e(", ".join(outages))}</li>' if outages
+    facts = [f'<li class="down"><a href="etat.html#services">Panne en cours : {e(", ".join(outages))}</a></li>' if outages
              else '<li class="good">Aucune panne en cours sur les services suivis</li>',
              f"<li>{plural(n_watch, 'avis à surveiller', 'avis à surveiller')}</li>"]
     if KEV_META.get("count"):
@@ -4148,6 +4257,10 @@ def main(out_dir: str = "_site") -> None:
         print(f"[!] Microsoft (bulletin mensuel) : {ex} ; flux RSS conservé.")
     ghsa = safe("GitHub Advisory", collect_ghsa) + safe("GitHub Advisory (infra)", collect_ghsa_infra)
     status_rows = collect_status()
+    try:   # grandes pannes relayées par la presse (Microsoft 365 n'a pas de page d'état lisible par un programme)
+        collect_outages(status_rows)
+    except Exception as ex:
+        STATUS.append(("Pannes (presse)", False, type(ex).__name__))
     eol = collect_eol()
     news = collect_news() if INCLUDE_PRESS else []
     try:   # avant le regroupement, pour que toutes les vues (accueil, articles, archives) aient le score
@@ -4186,6 +4299,7 @@ def main(out_dir: str = "_site") -> None:
         print(f"[{'ok' if ok else '!!'}] {name}: {detail}")
     notify_p1(urgent)
     weekly_recap(merged, AGENDA)
+    notify_outages(status_rows)
     print(f"Bulletin généré : {len(urgent)} alerte(s) prioritaire(s), {len(news)} actu(s).")
 
 
